@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- cleartext permitido globalmente: esta app de pruebas solo habla con
+         nuestro propio backend local y el m800-gateway, ambos HTTP plano en
+         IPs de red local que cambian cada vez que se reconfigura el equipo
+         en una red distinta (ver GatewaySettings). Listar IPs especificas
+         aqui se rompia en cada cambio de red (sesion del 11 nov). -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

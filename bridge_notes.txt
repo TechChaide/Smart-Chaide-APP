@@ -1,0 +1,8 @@
+age.getItem("cookie"))||{});"get"===a&&o&&u&&(o.reqTimestamp=(new Date).valueOf());var _={method:a,url:L()+i,data:n,params:o,headers:r()({},I.header,{"S-sid":p.sid},s)};l()(_).then(function(e){E(e,c)}).catch(function(e){var t=void 0;navigator.onLine&&"Network Error"!==e.message||(Object(m.Toast)({me
+===
+ d,u=n.b.getSleepAidAndMonitorDevice()[1];l||(l=""),$.ajax({url:i.b.getUrlHost()+"/pro/data/history/h5/query",type:"GET",headers:{"Accept-Language":s,"S-sid":l,"S-channelId":57018},dataType:"json",async:!0,data:{userId:e,startTime:t,order:a,num:r,deviceType:u.deviceType},success:function(n){console.
+===
+,getWeekData:function(e,t,a,n,r,s,l){var c;s||(s=""),$.ajax({url:i.b.getUrlHost()+"/pro/data/history/h5/week",type:"GET",headers:{"Accept-Language":r,"S-sid":s,"S-channelId":57018},dataType:"json",async:!0,data:{userId:e,startTime:t,order:a,num:n,lang:r},success:function(d){console.log(o,"getWeekDat
+===
+etMonthData:function(e,t,a,n,r,s,l){var c;s||(s=""),$.ajax({url:i.b.getUrlHost()+"/pro/data/history/h5/month",type:"GET",headers:{"Accept-Language":r,"S-sid":s,"S-channelId":57018},dataType:"json",async:!0,data:{userId:e,startTime:t,order:a,num:n,lang:r},success:function(e){e.status&&console.log(o,e
+===
