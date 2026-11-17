@@ -28,10 +28,10 @@ android {
 }
 
 dependencies {
-    // SDK real del fabricante (Sleepace/M800) para BLE + aprovisionamiento WiFi
-    // real — ver C:\Documentos_C\IT_Projects\AplicacionColchones\Android_M800_SDK.
-    // gson propio se excluye porque ya viene transitivamente por converter-gson.
-    implementation(fileTree("libs") { include("*.jar") })
+    // SDK M800 (BLE + aprovisionamiento WiFi + gateway TCP) — reemplazo 100%
+    // Kotlin de los antiguos m800sdk.jar/sdkcore.jar/wificonfigsdk.jar/
+    // wifidevicecommonsdk.jar, decompilados y portados en ../m800-kmp-sdk.
+    implementation(project(":m800-kmp-sdk"))
 
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")

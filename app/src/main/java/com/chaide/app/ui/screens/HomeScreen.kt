@@ -171,20 +171,43 @@ fun HomeScreen(
             // Cuando hay datos en vivo del sensor (gateway propio), la app
             // real reemplaza este renglon por ritmo cardiaco/respiracion en
             // vivo (bundle H5: realtimeData.heartRate/breathRate, sentinela
-            // 255/0 = "sin lectura todavia" -> "--").
+            // 255/0 = "sin lectura todavia").
+            //
+            // CORREGIDO: la app real NO muestra las tarjetas de bpm/rpm con
+            // "--" cuando no hay captura — directamente NO aparecen; solo se
+            // muestran cuando hay una lectura real y fresca. Antes esto
+            // siempre renderizaba los íconos (con guiones si no había dato),
+            // dando la impresión de estar "monitoreando" incluso sin equipo
+            // conectado o sin nadie en la cama. `ageMs` descarta lecturas
+            // viejas (equipo desconectado del gateway hace rato) y status=5
+            // (SLEEP_LEAVE, "fuera de cama") descarta a alguien que se
+            // levantó — igual que el SDK oficial documenta ese valor.
             val hr = liveData?.heartRate ?: -1
             val br = liveData?.breathRate ?: -1
-            val liveDetecting = hr <= 0 || hr == 255 || br <= 0 || br == 255
-            Row(
-                Modifier.fillMaxWidth().padding(vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(Icons.Filled.Hotel, null, tint = Mist, modifier = Modifier.size(22.dp))
-                Spacer(Modifier.width(10.dp))
-                Text("Left Bed", color = TextHi, style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-                LiveVitalInline(Icons.Filled.Favorite, if (liveDetecting) "--" else hr.toString(), "bpm", liveDetecting)
-                Spacer(Modifier.width(16.dp))
-                LiveVitalInline(Icons.Filled.Air, if (liveDetecting) "--" else br.toString(), "rpm", liveDetecting)
+            val fresh = (liveData?.ageMs ?: Long.MAX_VALUE) < 15_000L
+            val outOfBed = liveData?.status == 5
+            val isCapturing = fresh && !outOfBed && hr > 0 && hr != 255 && br > 0 && br != 255
+            if (isCapturing) {
+                // Réplica del renglón real de app-reference/1Home.png: DOS
+                // tarjetas con ícono circular + número grande + unidad +
+                // etiqueta debajo — NO texto chico pegado a "Left Bed" (así
+                // estaba antes, que solo arreglaba CUÁNDO se mostraba pero
+                // no CÓMO se ve). Reemplaza el renglón "Left Bed" entero
+                // mientras hay captura real, igual que la referencia (que no
+                // muestra ningún texto de "lado" cuando sí hay datos en vivo).
+                Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    VitalStatCard(Modifier.weight(1f), Icons.Filled.Favorite, hr, "BPM", "Heart Rate")
+                    VitalStatCard(Modifier.weight(1f), Icons.Filled.Air, br, "RPM", "Respiratory Rate")
+                }
+            } else {
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Filled.Hotel, null, tint = Mist, modifier = Modifier.size(22.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Text("Left Bed", color = TextHi, style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                }
             }
             HorizontalDivider(color = Hairline)
             Spacer(Modifier.height(14.dp))
@@ -268,23 +291,32 @@ private fun SimpleReportRow(title: String, subtitle: String, score: String, onCl
     HorizontalDivider(color = Hairline)
 }
 
+/**
+ * Réplica de la tarjeta real de app-reference/1Home.png: círculo con el
+ * ícono, número grande + unidad en la misma línea a su derecha, etiqueta
+ * ("Heart Rate"/"Respiratory Rate") debajo. Antes esto se mostraba como
+ * texto chico inline junto a "Left Bed" — nada que ver con el tamaño/
+ * disposición real.
+ */
 @Composable
-private fun LiveVitalInline(icon: androidx.compose.ui.graphics.vector.ImageVector, value: String, unit: String, pulsing: Boolean) {
-    val transition = rememberInfiniteTransition(label = "homeVitalPulse")
-    val alpha by transition.animateFloat(
-        initialValue = 0.4f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
-        label = "alpha"
-    )
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Icon(
-            icon, null, tint = Bad, modifier = Modifier.size(16.dp)
-                .graphicsLayer { if (pulsing) this.alpha = alpha }
-        )
-        Spacer(Modifier.width(4.dp))
-        Text(value, color = TextHi, style = MaterialTheme.typography.titleMedium)
-        Spacer(Modifier.width(2.dp))
-        Text(unit, color = Faint, style = MaterialTheme.typography.labelMedium)
+private fun VitalStatCard(modifier: Modifier, icon: androidx.compose.ui.graphics.vector.ImageVector, value: Int, unit: String, label: String) {
+    Column(modifier) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier.size(52.dp).background(IndigoSoft.copy(alpha = 0.25f), androidx.compose.foundation.shape.CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(icon, null, tint = TextHi, modifier = Modifier.size(24.dp))
+            }
+            Spacer(Modifier.width(12.dp))
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text("$value", color = TextHi, style = MaterialTheme.typography.headlineMedium)
+                Spacer(Modifier.width(4.dp))
+                Text(unit, color = Mist, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(bottom = 3.dp))
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(label, color = Faint, style = MaterialTheme.typography.bodyMedium)
     }
 }
 

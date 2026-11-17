@@ -94,7 +94,7 @@ object GatewaySettings {
 data class LoginRequest(val email: String, val password: String)
 data class RegisterRequest(val email: String, val password: String)
 data class RegisterResponse(val message: String?, val token: String?, val user: UserDto?)
-data class ErrorResponse(val message: String?, val error: String?)
+data class ErrorResponse(val message: String?, val error: String?, val code: String? = null)
 data class UserDto(
     val userId: Long?, val email: String?, val mobile: String?,
     val nickname: String?, val avatar: String?, val gender: Int?, val lan: String?

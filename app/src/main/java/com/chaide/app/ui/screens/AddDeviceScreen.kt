@@ -150,6 +150,33 @@ fun AddDeviceScreen(onBack: () -> Unit, onBound: () -> Unit = {}) {
 
     DisposableEffect(Unit) { onDispose { scanner?.stop() } }
 
+    // Chequeo previo: si la cuenta ya tiene un M800, ni se pide permiso de
+    // Bluetooth ni se escanea — se avisa de una vez (el backend real igual lo
+    // rechazaría con ACCOUNT_HAD_BOUND, pero preguntarle primero a /api/device
+    // evita hacerle perder 45s de escaneo al usuario para terminar en el mismo
+    // error). `null` = aún verificando, `""` = no tiene ninguno (puede seguir).
+    var existingDeviceName by remember { mutableStateOf<String?>(null) }
+    var checkedExisting by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        try {
+            val devices = withContext(Dispatchers.IO) { Api.service.devices() }.data ?: emptyList()
+            existingDeviceName = devices.firstOrNull { it.deviceType == 38 }?.deviceName
+        } catch (_: Exception) {
+            // Sin conexión para chequear: se deja seguir, el bind real igual valida.
+        } finally {
+            checkedExisting = true
+        }
+    }
+
+    fun parseBindError(e: Exception): String = when (e) {
+        is retrofit2.HttpException -> try {
+            com.google.gson.Gson()
+                .fromJson(e.response()?.errorBody()?.string(), com.chaide.app.net.ErrorResponse::class.java)
+                ?.message ?: "Bind failed"
+        } catch (_: Exception) { "Bind failed" }
+        else -> e.message ?: "Bind failed"
+    }
+
     fun bind(serial: String) {
         failure = null
         scope.launch {
@@ -161,7 +188,7 @@ fun AddDeviceScreen(onBack: () -> Unit, onBound: () -> Unit = {}) {
                 found = emptyList()
                 wifiStep = true
             } catch (e: Exception) {
-                failure = e.message ?: "Bind failed"
+                failure = parseBindError(e)
             }
         }
     }
@@ -170,8 +197,13 @@ fun AddDeviceScreen(onBack: () -> Unit, onBound: () -> Unit = {}) {
         failure = null; boundName = null; wifiStep = false; found = emptyList(); scanning = true
         val p = M800BleProvisioner(context)
         scanner = p
-        // 10 s, igual que el `setTimeout(doNext, 1e4)` del componente real.
-        p.scanForDevices(timeoutMs = 10_000) { devices ->
+        // El componente Vue real usa 10s (`setTimeout(doNext, 1e4)`), pero eso
+        // asume que el equipo anuncia por BLE de forma continua. Verificado
+        // contra hardware real: el M800 ya aprovisionado (luz verde fija)
+        // anuncia en RÁFAGAS intermitentes, no continuas — varios intentos de
+        // 10s seguidos no lo encontraron, y uno de 45s sí. Se amplía la
+        // ventana para no depender de la suerte del timing de la ráfaga.
+        p.scanForDevices(timeoutMs = 45_000) { devices ->
             scanning = false
             if (devices.isEmpty()) {
                 failure = "No device found. Make sure the green light is flashing slowly."
@@ -220,6 +252,10 @@ fun AddDeviceScreen(onBack: () -> Unit, onBound: () -> Unit = {}) {
         ) {
             when {
                 result != null -> BoundOk(result!!, onBack)
+                !checkedExisting -> Box(Modifier.fillMaxSize(), Alignment.Center) {
+                    CircularProgressIndicator(color = TextHi)
+                }
+                existingDeviceName != null -> AlreadyHasDevice(existingDeviceName!!, onBack)
                 wifiStep -> WifiSettingsStep(
                     ssid = wifiSsid, onSsidChange = { wifiSsid = it },
                     password = wifiPass, onPasswordChange = { wifiPass = it },
@@ -591,6 +627,43 @@ private fun Scanning() {
         CircularProgressIndicator(color = TextHi)
         Spacer(Modifier.height(20.dp))
         Text("Adding Device…", color = TextHi, style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(10.dp))
+        // El equipo anuncia por BLE en ráfagas intermitentes, no continuas —
+        // puede tardar hasta ~45s en vez de unos pocos segundos. Sin este
+        // aviso, un usuario ve el spinner "colgado" y cierra la pantalla
+        // justo antes de que la ráfaga llegue.
+        Text(
+            "Esto puede tardar hasta 45 segundos — el equipo no anuncia de forma continua.",
+            color = Mist, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center,
+            modifier = Modifier.padding(horizontal = 32.dp),
+        )
+    }
+}
+
+/** Se muestra en vez de escanear cuando la cuenta ya tiene un M800 — evita
+ * pedir permiso de Bluetooth y hacer un escaneo de 45s para terminar en el
+ * mismo rechazo que ya daría el backend (ACCOUNT_ALREADY_HAS_DEVICE_TYPE). */
+@Composable
+private fun AlreadyHasDevice(deviceName: String, onBack: () -> Unit) {
+    Column(
+        Modifier.fillMaxSize().padding(horizontal = 24.dp), verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(Icons.Filled.Error, null, tint = Low, modifier = Modifier.size(56.dp))
+        Spacer(Modifier.height(20.dp))
+        Text("You already have a Smart Mattress", color = TextHi, style = MaterialTheme.typography.titleLarge, textAlign = TextAlign.Center)
+        Spacer(Modifier.height(10.dp))
+        Text(
+            "Tu cuenta ya tiene vinculado $deviceName. Desvincúlalo desde el detalle del dispositivo antes de agregar uno nuevo.",
+            color = Mist, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(28.dp))
+        Button(
+            onClick = onBack,
+            modifier = Modifier.fillMaxWidth().height(56.dp),
+            shape = RoundedCornerShape(28.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = BtnFill, contentColor = TextHi),
+        ) { Text("Volver", style = MaterialTheme.typography.labelLarge) }
     }
 }
 
