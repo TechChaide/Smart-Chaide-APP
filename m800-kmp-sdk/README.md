@@ -2,44 +2,98 @@
 
 Módulo Kotlin Multiplatform (Android + iOS) para el protocolo M800 de Sleepace:
 TCP gateway (login, streaming de ritmo cardiaco/respiración) + aprovisionamiento
-WiFi por BLE. Construido reemplazando `m800sdk.jar`/`sdkcore.jar`/`wificonfigsdk.jar`
-(vendor jars de `chaide-app/app/libs/`, solo JVM/Android) por una reimplementación
-en Kotlin puro, decompilada y portada clase por clase desde esos jars con CFR
-(ver `../kmp-sdk-research/decompiled/`).
+WiFi por BLE. Reemplaza `m800sdk.jar`/`sdkcore.jar`/`wificonfigsdk.jar`/
+`wifidevicecommonsdk.jar` (los jars del fabricante, solo JVM/Android) con una
+reimplementación en Kotlin puro, decompilada y portada clase por clase desde
+esos jars con CFR.
 
-## Qué tan portable era el SDK original (hallazgo clave)
+## Estado real (actualizado 2026-11-18)
+
+**Android: integrado, compilando y validado end-to-end contra hardware real.**
+`chaide-app` ya no tiene los 4 jars del fabricante (eliminados de
+`app/libs/`) — usa este módulo vía `implementation(project(":m800-kmp-sdk"))`.
+Verificado en un teléfono físico con un M800 real: escaneo BLE, resolución de
+identidad (`identifyDevice`/`GET_SYSTEM_INFO`), `bindDevice` al backend,
+aprovisionamiento WiFi real (`WiFiConfigHelper.bleWiFiConfig`), y streaming de
+datos en vivo por TCP (gateway propio) mostrándose en la UI. El flujo completo
+de "Agregar dispositivo" de la app funciona de punta a punta con este módulo.
+
+**iOS: implementación real, escrita pero NUNCA compilada ni probada.** No ha
+habido Mac/Xcode disponible en ningún momento de este proyecto. El código no
+es un stub — usa CoreBluetooth real (`CBCentralManager`/`CBPeripheral`) y
+sockets POSIX reales (`platform.posix`) — pero nadie lo ha pasado por el
+compilador de Kotlin/Native todavía. Hay que asumir que la primera compilación
+en Mac va a sacar errores de interop que aquí no se pudieron ver.
+
+### Bug conocido y bloqueante en iOS — arreglar ANTES de probar "Agregar dispositivo"
+
+`src/iosMain/kotlin/com/chaide/m800sdk/ble/BleTransport.ios.kt`, método
+`centralManager(... didDiscoverPeripheral ...)`:
+
+```kotlin
+override val rawRecord: ByteArray = ByteArray(0)
+```
+
+Esto SIEMPRE es un array vacío. En Android, `BleScanResult.rawRecord` trae los
+bytes crudos del advertisement BLE (estructura AD: `[len][type][data...]`
+repetida), y `M800Protocol.parseAdField`/`parseSerial`/`parseLocalName`
+(en `chaide-app/app/src/main/java/com/chaide/app/ble/M800Protocol.kt`)
+dependen de esos bytes crudos para sacar el nombre corto (AD 0x09) y el
+serial real del equipo (AD 0xFF, datos de fabricante).
+
+CoreBluetooth en iOS **no expone esos bytes crudos** — entrega un diccionario
+ya parseado (`advertisementData: Map<Any?, *>`, con llaves como
+`CBAdvertisementDataLocalNameKey` y `CBAdvertisementDataManufacturerDataKey`).
+Por eso, tal como está hoy, el escaneo en iOS SÍ encontraría periféricos BLE
+cercanos, pero nunca podría identificar cuál es el M800 ni sacarle el serial
+— `parseSerial` siempre recibiría un array vacío.
+
+**Dos formas de arreglarlo (elegir una antes de seguir):**
+1. Reconstruir un array de bytes AD sintético desde el diccionario de
+   CoreBluetooth (tomar `CBAdvertisementDataLocalNameKey` y
+   `CBAdvertisementDataManufacturerDataKey`, volver a armar los `[len][type][data]`
+   manualmente) para que `rawRecord` traiga algo que `M800Protocol` sepa leer
+   sin tocar ese archivo común.
+2. Refactorizar `M800Protocol`/`BleScanResult` para que cada plataforma
+   entregue los campos YA separados (nombre, datos de fabricante) en vez de
+   bytes crudos, y mover el parseo AD-structure solo al lado Android.
+
+La opción 1 es menos invasiva (no toca código común ni Android, que ya está
+probado). La opción 2 es más limpia a largo plazo pero obliga a retocar
+`M800BleProvisioner.kt` del lado Android también.
+
+### Otro hallazgo de esta sesión que también aplica a iOS
+
+El M800 ya aprovisionado (luz verde fija, conectado a WiFi) **sí anuncia por
+BLE, pero en ráfagas intermitentes, no de forma continua** — confirmado contra
+hardware real en Android: escaneos de 10s fallaban al azar, uno de 45s lo
+encontró. Esto es comportamiento del firmware del equipo, no específico de
+Android — la misma espera larga va a hacer falta en el lado iOS del flujo de
+"Agregar dispositivo" cuando se construya.
+
+### Sin empaquetado para Xcode todavía
+
+`build.gradle.kts` de este módulo no tiene ningún bloque `binaries { framework
+{...} }` ni `cocoapods {}` — faltan antes de que un proyecto Xcode pueda
+consumir esto como `.framework`/XCFramework. Tampoco existe ningún proyecto
+iOS en este repo (ni Xcode project, ni una sola pantalla SwiftUI) — todas las
+~20 pantallas de `chaide-app` (Compose) habría que reconstruirlas del lado
+iOS; este módulo es solo la capa de lógica BLE/TCP, no trae UI.
+
+## Qué tan portable era el SDK original (hallazgo del port inicial)
 
 Al decompilar los 4 jars, de 63 clases, 46 no tenían **ninguna** referencia a
 `android.*`. De las 17 restantes, 16 solo tocaban Android de forma trivial
 (`TextUtils.isEmpty`, `SystemClock.sleep`, `Log`, un `ConnectivityManager`
-opcional) — reemplazable con `expect`/`actual` de pocas líneas. **Solo
-`BleHelper.java` (GATT real) es irreductiblemente específico de plataforma.**
+opcional) — reemplazable con `expect`/`actual` de pocas líneas. Solo
+`BleHelper.java` (GATT real) es irreductiblemente específico de plataforma.
 
-Lo que esa primera pasada NO detectó (visible solo al decompilar, no al
-mirar imports): `java.nio.ByteBuffer` y `java.util.zip.CRC32` — usados
-intensamente en `SocketFrame`, `SocketManager`, `M800Manager`,
-`WiFiConfigHelper` — son JVM-only, no están disponibles en Kotlin/Native.
-Se reemplazaron con `util/PortableBuffer.kt` y `util/PortableCRC32.kt`
-(mismo algoritmo CRC-32 estándar, mismo subset de API de `ByteBuffer`).
-
-## Estado real por plataforma
-
-- **Android — puerto fiel, mismo comportamiento que el jar original.**
-  `java.net.Socket` igual que antes, `BleHelper` (GATT) portado método a
-  método a `AndroidBleTransport`. Esto es lo que hoy usa `chaide-app` vía
-  los jars; aquí es código Kotlin equivalente, listo para compilar y probar
-  contra un M800 real igual que la app actual.
-- **iOS — implementación real, NO probada en este entorno.** Esta máquina
-  es Windows sin Xcode/Mac, así que los targets `iosArm64`/
-  `iosSimulatorArm64` no se pudieron compilar ni ejecutar aquí. El socket
-  TCP usa sockets POSIX reales (`platform.posix`, sin dependencias extra) y
-  el BLE usa CoreBluetooth real (`CBCentralManager`/`CBPeripheral`) — **no
-  es un stub**, pero tampoco está validado contra hardware. Antes de usarlo
-  en producción: compilar en una Mac, correr contra un M800 real, y revisar
-  especialmente `connect(address, ...)` en `BleTransport.ios.kt` (iOS no
-  expone MAC address, solo un UUID de `CBPeripheral.identifier` — hay que
-  adaptar el flujo de `WiFiConfigHelper.bleWiFiConfig()` para escanear y
-  resolver ese UUID en vez de reusar la MAC que usa Android).
+Lo que esa primera pasada NO detectó (visible solo al decompilar, no al mirar
+imports): `java.nio.ByteBuffer` y `java.util.zip.CRC32` — usados intensamente
+en `SocketFrame`, `SocketManager`, `M800Manager`, `WiFiConfigHelper` — son
+JVM-only, no disponibles en Kotlin/Native. Se reemplazaron con
+`util/PortableBuffer.kt` y `util/PortableCRC32.kt` (mismo algoritmo CRC-32
+estándar, mismo subset de API de `ByteBuffer`).
 
 ## Qué quedó fuera (a propósito, no por descuido)
 
@@ -54,8 +108,8 @@ Se reemplazaron con `util/PortableBuffer.kt` y `util/PortableCRC32.kt`
 ```
 src/commonMain/   protocolo, modelo de datos, SocketManager/M800Manager,
                    WiFiConfigHelper — 100% Kotlin compartido
-src/androidMain/  actual de BLE (GATT real) y socket (java.net.Socket)
-src/iosMain/      actual de BLE (CoreBluetooth) y socket (POSIX)
+src/androidMain/  actual de BLE (GATT real) y socket (java.net.Socket) — PROBADO
+src/iosMain/      actual de BLE (CoreBluetooth) y socket (POSIX) — SIN PROBAR
 ```
 
 ## Uso
@@ -72,13 +126,16 @@ val gateway = M800Sdk.m800Helper()
 gateway.login(ip, port, sid, deviceId) { result -> ... }
 ```
 
-## Pendiente antes de reemplazar los jars en `chaide-app`
+## Orden recomendado de trabajo en la Mac
 
-1. Compilar este módulo (`./gradlew :m800-kmp-sdk:assemble` una vez tenga
-   wrapper, o vía el mismo flujo `GradleWrapperMain` que usa `chaide-app`)
-   y corregir lo que el compilador señale — este código se escribió sin
-   acceso a un compilador Kotlin en esta sesión.
-2. Probar el path Android contra un M800 físico (mismo hardware/firmware
-   que ya funciona con los jars) antes de quitar las dependencias viejas.
-3. Para iOS: compilar en Mac, resolver el tema de identidad de dispositivo
-   (MAC vs `CBPeripheral.identifier`) y validar contra hardware real.
+1. **Primero, compilar tal cual está** (`iosX64`/`iosSimulatorArm64`, el
+   target más rápido de iterar) antes de tocar nada — para ver qué errores de
+   interop/compilador salen realmente, en vez de adivinar.
+2. Arreglar el bug de `rawRecord` (ver arriba) — sin esto, "Agregar
+   dispositivo" nunca va a poder identificar el M800 en iOS aunque todo lo
+   demás compile y corra.
+3. Agregar el empaquetado `binaries { framework {...} }` (o `cocoapods {}`)
+   para poder consumir el módulo desde un proyecto Xcode real.
+4. Recién ahí decidir el alcance del proyecto iOS en sí (qué pantallas de
+   `chaide-app` hacen falta primero) — eso es un esfuerzo aparte, comparable
+   al que ya se invirtió en el lado Android.
