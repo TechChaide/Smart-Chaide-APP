@@ -12,7 +12,16 @@ package com.chaide.app.net
  */
 object AppConfig {
     private enum class Target { REMOTE, LOCAL_LAN, LOCAL_USB }
-    private val TARGET = Target.LOCAL_LAN
+    // REMOTE: el backend ya esta expuesto por HTTPS en apps.chaide.com (Traefik,
+    // servidor SRVWEB2CHAIDE 192.168.1.210), asi que no hace falta exponer nada
+    // nuevo a internet para el API. El m800-gateway (protocolo TCP binario, no
+    // HTTP/TLS) SI se queda en la LAN interna (ver GatewaySettings en Api.kt,
+    // valor independiente de este BASE_URL) porque los equipos de prueba (M800
+    // reales + celulares) estan todos en la misma red interna de la empresa que
+    // esta PC -- no necesita salir a internet, y abrir un puerto TCP crudo nuevo
+    // en el servidor publico se descarto por riesgo (comparte firewall con otras
+    // apps con .env sensibles).
+    private val TARGET = Target.REMOTE
 
     private const val REMOTE_TEST_BASE_URL = "https://apps.chaide.com/smartChaideTestBA/api/"
 

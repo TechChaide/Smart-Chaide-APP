@@ -33,10 +33,57 @@ apuntar, con tres opciones ya escritas:
   viendo los mismos datos.
 - `LOCAL_USB` — `127.0.0.1:5500` + `adb reverse tcp:5500 tcp:5501` (USB).
 
-Hoy el target activo es `LOCAL_LAN` apuntando a la IP WiFi de la PC Windows
-donde se desarrolló esto — **no va a resolver desde otra red/máquina**;
-hay que cambiar `TARGET` a `REMOTE` (o montar el stack local propio, ver
-siguiente sección) antes de probar "Agregar dispositivo" en la Mac.
+Hoy el target activo es **`REMOTE`** (`apps.chaide.com/smartChaideTestBA`).
+
+## Gateway de pruebas (M800, TCP crudo) — topología híbrida a propósito
+
+El API (REST) y el gateway M800 (TCP binario, protocolo propio con frames
+`$_@-`) son **dos servidores independientes**, configurados por separado:
+- **API** → `AppConfig.TARGET` (arriba). Hoy `REMOTE`, por HTTPS.
+- **Gateway** → `GatewaySettings` (`app/.../net/Api.kt`), **no** sigue a
+  `AppConfig`. Se edita en vivo en la pantalla "Add Device" (campo "Server
+  IP (gateway de pruebas)") y queda persistido en `SharedPreferences` del
+  teléfono — por eso cambiar el default en el código NO actualiza un
+  teléfono que ya guardó un valor antes.
+
+**Por qué están separados y por qué el gateway NO va a `apps.chaide.com`:**
+el M800 real habla TCP crudo, no HTTP/TLS — no se puede meter en el mismo
+`:443` que usa Traefik para el API (no hay SNI que enrutar si el cliente no
+hace handshake TLS). Abrir un puerto nuevo en el servidor público
+(`192.168.1.210` / borde `200.41.89.180`) se descartó: ese servidor comparte
+firewall con otras apps que tienen `.env` sensibles, y un puerto TCP crudo
+nuevo expuesto al mundo es superficie de ataque injustificada para lo que
+se necesita.
+
+**La solución real: no hace falta exponerlo a internet.** Los equipos de
+prueba (M800 físicos + celulares Android/iOS) están en la misma red interna
+que la PC que corre el gateway — así que el gateway se queda en la LAN:
+
+| Pieza | Dónde corre | Cómo se llega |
+|---|---|---|
+| API (login, perfil, dispositivos, reportes, bind) | `apps.chaide.com/smartChaideTestBA` | HTTPS, desde cualquier red (`AppConfig.TARGET = REMOTE`) |
+| Gateway M800 (discovery `29010`, datos `29011`, HTTP `/realtime` `29012`) | Esta PC (`docker-compose.local.yml` en `deploy-test-api/gateway-smart-chaide/`), contenedor `smart_chaide_test_gateway_service` | TCP plano, **solo LAN** — IP WiFi actual de la PC, puesta en "Add Device" → "Server IP" |
+
+**Pasos para dejarlo apuntando bien (cada vez que la IP de la PC cambie):**
+1. `Get-NetIPAddress` en la PC que corre el gateway → anotar la IP WiFi actual.
+2. Confirmar que el contenedor sigue arriba: `docker ps` → `smart_chaide_test_gateway_service`
+   publicado en `0.0.0.0:29010-29012`.
+3. Firewall de Windows: ya hay reglas creadas ("m800-gateway Chaide pruebas",
+   puertos 29010-29012, `Allow`/`Profile=Any`) — no se necesita nada nuevo
+   salvo que se reinstale Windows/Docker Desktop.
+4. En el teléfono de prueba, pantalla "Add Device" → campo "Server IP
+   (gateway de pruebas)" → escribir esa IP (el puerto por defecto, `29010`,
+   no cambia). El default en código (`GatewaySettings.ip` en `Api.kt`) es
+   solo el valor inicial para una instalación nueva de la app; si el
+   teléfono ya tenía uno guardado, hay que retipearlo ahí o borrar datos de
+   la app.
+5. Verificar en `docker logs smart_chaide_test_gateway_service -f` que
+   llega la conexión del equipo al aprovisionar WiFi.
+
+Esto cubre Android e iOS (cuando exista el proyecto iOS) por igual: ambos
+hablan HTTPS al mismo API remoto y TCP plano al mismo gateway LAN — nada de
+esto depende del sistema operativo del teléfono, solo de estar en la misma
+red que la PC del gateway.
 
 ## Correr
 1. Android Studio → **Open** → carpeta `chaide-app` → sincronizar Gradle (AGP 8.5.2 / Gradle 8.7).

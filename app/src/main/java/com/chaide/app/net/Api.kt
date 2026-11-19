@@ -69,11 +69,11 @@ object GatewaySettings {
     private const val KEY_HTTP_PORT = "http_port"
     private lateinit var prefs: android.content.SharedPreferences
 
-    // IP de esta PC en la WiFi actual (ver `Get-NetIPAddress`) — corregida
-    // tras confirmar en el log de m800-gateway que el valor viejo (.122) no
-    // correspondia a ninguna interfaz real: el M800 se unia al WiFi pero
-    // nunca llegaba a reportarse (luz roja intermitente).
-    @Volatile var ip: String = "192.168.206.89"
+    // IP de esta PC en la WiFi actual (ver `Get-NetIPAddress`) — cambia cada
+    // vez que se reconecta a la red (DHCP). Si un telefono ya tiene un valor
+    // viejo guardado (SharedPreferences, ver init() abajo), este default NO
+    // lo pisa: hay que retipearlo en "Add Device" o borrar datos de la app.
+    @Volatile var ip: String = "192.168.205.95"
         set(value) { field = value; persist() }
     @Volatile var httpPort: Int = 29012
         set(value) { field = value; persist() }
