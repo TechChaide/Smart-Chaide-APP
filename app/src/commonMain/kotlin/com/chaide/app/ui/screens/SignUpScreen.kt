@@ -29,7 +29,8 @@ import kotlinx.coroutines.withContext
 
 /** Mismo layout real que [LoginScreen] (fondo azul plano, campos subrayados,
  *  checkbox de términos) con el campo extra de confirmar contraseña que pide
- *  el registro real (`password2` en `/pro/account/register/`). */
+ *  el registro real (`password2`, igual que `/pro/account/register/`, pero
+ *  creado directo en `auth.controller.js` del backend de pruebas). */
 @Composable
 fun SignUpScreen(onBack: () -> Unit, onSuccess: () -> Unit) {
     var email by remember { mutableStateOf("") }
@@ -98,7 +99,7 @@ fun SignUpScreen(onBack: () -> Unit, onSuccess: () -> Unit) {
                 scope.launch {
                     try {
                         val r = withContext(Dispatchers.IO) {
-                            Api.service.register(RegisterRequest(email.trim(), password))
+                            Api.service.register(RegisterRequest(email.trim(), password, confirmPassword))
                         }
                         if (r.token != null) { Session.token = r.token; Session.user = r.user; onSuccess() }
                         else error = r.message ?: "Could not create the account"

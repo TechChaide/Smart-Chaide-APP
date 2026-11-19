@@ -110,7 +110,7 @@ object GatewaySettings {
 @Serializable
 data class LoginRequest(val email: String, val password: String)
 @Serializable
-data class RegisterRequest(val email: String, val password: String)
+data class RegisterRequest(val email: String, val password: String, val password2: String)
 @Serializable
 data class RegisterResponse(val message: String? = null, val token: String? = null, val user: UserDto? = null)
 @Serializable
