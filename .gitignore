@@ -17,3 +17,11 @@ local.properties
 build.log
 *.apk
 *.aab
+
+# iOS / Xcode
+iosApp/**/xcuserdata/
+iosApp/**/*.xcworkspace/xcuserdata/
+*.xcuserstate
+DerivedData/
+.kotlin/
+/.idea/

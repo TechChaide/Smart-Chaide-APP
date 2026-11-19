@@ -1,20 +1,16 @@
 plugins {
-    // Versions match the parent app's root build.gradle.kts when this module is
-    // included as its :m800-kmp-sdk subproject — kept explicit here too so this
-    // module stays independently buildable/testable on its own (as validated
-    // standalone with `compileDebugKotlinAndroid`, see README).
-    kotlin("multiplatform") version "1.9.24"
-    id("com.android.library") version "8.5.2"
+    // Versiones declaradas en el build.gradle.kts raiz (Kotlin 2.1.0, AGP 8.5.2).
+    kotlin("multiplatform")
+    id("com.android.library")
 }
 
 group = "com.chaide.m800sdk"
 version = "0.1.0"
 
 kotlin {
+    applyDefaultHierarchyTemplate()
     androidTarget {
-        compilations.all {
-            kotlinOptions.jvmTarget = "1.8"
-        }
+        compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_1_8) }
     }
 
     iosX64()
@@ -22,28 +18,8 @@ kotlin {
     iosSimulatorArm64()
 
     sourceSets {
-        val commonMain by getting {
-            dependencies {
-                implementation(kotlin("stdlib"))
-            }
-        }
-        val commonTest by getting {
-            dependencies {
-                implementation(kotlin("test"))
-            }
-        }
-
-        val androidMain by getting
-        val androidUnitTest by getting
-
-        val iosX64Main by getting
-        val iosArm64Main by getting
-        val iosSimulatorArm64Main by getting
-        val iosMain by creating {
-            dependsOn(commonMain)
-            iosX64Main.dependsOn(this)
-            iosArm64Main.dependsOn(this)
-            iosSimulatorArm64Main.dependsOn(this)
+        commonTest.dependencies {
+            implementation(kotlin("test"))
         }
     }
 }

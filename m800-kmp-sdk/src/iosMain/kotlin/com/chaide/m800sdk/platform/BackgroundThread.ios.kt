@@ -1,40 +1,43 @@
 package com.chaide.m800sdk.platform
 
-import kotlin.native.concurrent.AtomicReference
+import kotlin.concurrent.AtomicInt
+import platform.Foundation.NSDate
 import platform.Foundation.NSThread
+import platform.Foundation.timeIntervalSince1970
 import platform.posix.usleep
 
 /**
- * Backed by `NSThread.detachNewThreadWithBlock`, the simplest reliable way
- * to run a long-lived blocking loop (socket read/write) on Kotlin/Native
- * Apple targets without extra cinterop setup.
+ * Respaldado por `NSThread.detachNewThreadWithBlock`, la forma mas simple de
+ * correr un bucle bloqueante de larga vida (lectura/escritura de socket) en
+ * Kotlin/Native para Apple sin cinterop adicional.
  */
 actual class BackgroundThread actual constructor(name: String, private val block: () -> Unit) {
     private val threadName = name
-    private val stopped = AtomicReference(false)
-    private val running = AtomicReference(false)
+    private val stopped = AtomicInt(0)
+    private val running = AtomicInt(0)
 
     actual fun start() {
-        running.value = true
+        running.value = 1
         NSThread.detachNewThreadWithBlock {
             NSThread.currentThread.name = threadName
-            if (!stopped.value) block()
-            running.value = false
+            try {
+                if (stopped.value == 0) block()
+            } finally {
+                running.value = 0
+            }
         }
     }
 
-    // Kotlin/Native has no `Thread.interrupt()`; every loop in this module
-    // (see `SocketHelper`) already checks an `isReading`/`isWriting`-style
-    // flag each iteration, so a cooperative stop flag is equivalent here.
-    actual fun interrupt() { stopped.value = true }
+    // Kotlin/Native no tiene `Thread.interrupt()`; todos los bucles de este
+    // modulo (ver `SocketHelper`) revisan una bandera en cada iteracion, asi
+    // que una parada cooperativa es equivalente.
+    actual fun interrupt() { stopped.value = 1 }
 
-    actual val isAlive: Boolean get() = running.value
+    actual val isAlive: Boolean get() = running.value == 1
 }
 
 actual fun sleepMillis(ms: Long) {
-    usleep((ms * 1000).toUInt())
+    if (ms > 0) usleep((ms * 1000).toUInt())
 }
 
-actual fun currentTimeMillis(): Long {
-    return (platform.Foundation.NSDate().timeIntervalSince1970 * 1000).toLong()
-}
+actual fun currentTimeMillis(): Long = (NSDate().timeIntervalSince1970 * 1000).toLong()

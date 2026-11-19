@@ -2,12 +2,17 @@ package com.chaide.m800sdk.ble
 
 import com.chaide.m800sdk.log.SdkLog
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.ObjCSignatureOverride
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.usePinned
+import platform.CoreBluetooth.CBAdvertisementDataLocalNameKey
+import platform.CoreBluetooth.CBAdvertisementDataManufacturerDataKey
 import platform.CoreBluetooth.CBCentralManager
 import platform.CoreBluetooth.CBCentralManagerDelegateProtocol
+import platform.CoreBluetooth.CBCentralManagerScanOptionAllowDuplicatesKey
 import platform.CoreBluetooth.CBCharacteristic
+import platform.CoreBluetooth.CBCharacteristicPropertyWriteWithoutResponse
 import platform.CoreBluetooth.CBCharacteristicWriteWithResponse
 import platform.CoreBluetooth.CBCharacteristicWriteWithoutResponse
 import platform.CoreBluetooth.CBManagerStatePoweredOn
@@ -18,28 +23,40 @@ import platform.CoreBluetooth.CBUUID
 import platform.Foundation.NSData
 import platform.Foundation.NSError
 import platform.Foundation.NSNumber
+import platform.Foundation.NSString
 import platform.Foundation.create
+import platform.darwin.DISPATCH_TIME_NOW
 import platform.darwin.NSObject
+import platform.darwin.dispatch_after
 import platform.darwin.dispatch_get_main_queue
+import platform.darwin.dispatch_time
 
 /**
- * CoreBluetooth implementation of [BleTransport] — this is the genuinely
- * new part of the port: there is no Sleepace Swift SDK being wrapped here,
- * this talks to the M800's GATT service (same UUIDs as Android's
- * `0000ffe0/e4/e5/e9` Nordic-UART-style layout) directly via Apple's own
- * framework.
+ * Implementacion CoreBluetooth de [BleTransport], con la misma semantica que
+ * `AndroidBleTransport` (que es la validada contra hardware real):
  *
- * NOT exercised on real hardware in this session — this machine has no Mac/
- * Xcode toolchain to even compile the `iosArm64`/`iosSimulatorArm64`
- * targets, so treat this as a structurally-complete first draft that needs
- * a real build + on-device validation pass before shipping, not as
- * proven-working code the way the Android port is.
+ *  - UNA sola instancia por proceso ([BleTransportProvider.create] devuelve
+ *    siempre la misma), igual que el `BleHelper` singleton original.
+ *  - `scan(scanTimeMs)` se detiene solo al vencer el tiempo y avisa
+ *    `onScanStopped()` (WiFiConfigHelper depende de eso).
+ *  - `connect(address)`: iOS no expone la MAC; `address` es el
+ *    `CBPeripheral.identifier.UUIDString` que entrega el propio escaneo en
+ *    `BleScanResult.address`, asi que todo el flujo comun sigue funcionando.
+ *  - `rawRecord`: CoreBluetooth no entrega los bytes crudos del advertisement,
+ *    asi que se RECONSTRUYEN como estructuras AD `[len][type][data]` a partir
+ *    del diccionario (0x09 nombre local, 0xFF datos de fabricante). Con eso
+ *    `M800Protocol.parseLocalName/parseSerial` funcionan sin cambios.
  */
 @OptIn(ExperimentalForeignApi::class)
-class IosBleTransport : NSObject(), BleTransport, CBCentralManagerDelegateProtocol, CBPeripheralDelegateProtocol {
+class IosBleCentral internal constructor() : NSObject(),
+    CBCentralManagerDelegateProtocol, CBPeripheralDelegateProtocol {
 
     private var listener: BleTransportListener? = null
-    private var centralManager: CBCentralManager? = null
+    private val centralManager: CBCentralManager =
+        CBCentralManager(delegate = this, queue = dispatch_get_main_queue())
+
+    // CoreBluetooth exige retener los CBPeripheral descubiertos para poder conectarlos.
+    private val discovered = mutableMapOf<String, CBPeripheral>()
     private var targetPeripheral: CBPeripheral? = null
     private var writeChar: CBCharacteristic? = null
     private var notifyChar: CBCharacteristic? = null
@@ -49,96 +66,125 @@ class IosBleTransport : NSObject(), BleTransport, CBCentralManagerDelegateProtoc
     private var writeServiceUUID = CBUUID.UUIDWithString("0000ffe5-0000-1000-8000-00805f9b34fb")
     private var writeCharUUID = CBUUID.UUIDWithString("0000ffe9-0000-1000-8000-00805f9b34fb")
 
-    private var connected = false
+    private var scanning = false
+    private var scanGeneration = 0
+    private var pendingScanMs: Int? = null      // scan pedido antes de que el radio este listo
     private var pendingConnectAddress: String? = null
+    private var connectGeneration = 0
+    private var connected = false
     private var mtu = 20
 
-    private fun manager(): CBCentralManager {
-        var m = centralManager
-        if (m == null) {
-            m = CBCentralManager(delegate = this, queue = dispatch_get_main_queue())
-            centralManager = m
-        }
-        return m
-    }
+    fun setListener(listener: BleTransportListener?) { this.listener = listener }
 
-    override fun setListener(listener: BleTransportListener?) { this.listener = listener }
-
-    override fun initUuids(notifyServiceUuid: String, notifyCharacteristicUuid: String, writeServiceUuid: String, writeCharacteristicUuid: String) {
+    fun initUuids(notifyServiceUuid: String, notifyCharacteristicUuid: String, writeServiceUuid: String, writeCharacteristicUuid: String) {
         notifyServiceUUID = CBUUID.UUIDWithString(notifyServiceUuid)
         notifyCharUUID = CBUUID.UUIDWithString(notifyCharacteristicUuid)
         writeServiceUUID = CBUUID.UUIDWithString(writeServiceUuid)
         writeCharUUID = CBUUID.UUIDWithString(writeCharacteristicUuid)
     }
 
-    override fun isBluetoothOpen(): Boolean = manager().state == CBManagerStatePoweredOn
-    override fun isSupportBle(): Boolean = true // every iOS device Kotlin/Native currently targets has BLE
+    fun isBluetoothOpen(): Boolean = centralManager.state == CBManagerStatePoweredOn
+    fun isSupportBle(): Boolean = true
 
-    override fun scan(scanTimeMs: Int) {
-        if (!isBluetoothOpen()) return
+    fun scan(scanTimeMs: Int) {
+        if (scanning) return
+        if (!isBluetoothOpen()) {
+            // Recien creado el CBCentralManager el estado es "unknown" unos ms;
+            // se arranca en cuanto pase a poweredOn (centralManagerDidUpdateState).
+            pendingScanMs = scanTimeMs
+            return
+        }
+        scanning = true
+        val gen = ++scanGeneration
         listener?.onScanStarted()
-        manager().scanForPeripheralsWithServices(null, options = null)
+        SdkLog.log("IosBleTransport scan() ${scanTimeMs}ms")
+        // AllowDuplicates: el M800 anuncia en rafagas y a veces el primer
+        // anuncio llega sin datos de fabricante; hay que ver los siguientes.
+        centralManager.scanForPeripheralsWithServices(
+            null, options = mapOf<Any?, Any?>(CBCentralManagerScanOptionAllowDuplicatesKey to true)
+        )
+        runAfter(scanTimeMs.toLong()) { if (gen == scanGeneration && scanning) stopScan() }
     }
 
-    override fun stopScan() {
-        centralManager?.stopScan()
+    fun stopScan() {
+        pendingScanMs = null
+        if (!scanning) return
+        scanning = false
+        scanGeneration++
+        centralManager.stopScan()
         listener?.onScanStopped()
     }
 
-    override fun connect(address: String, timeoutMs: Int) {
-        // CoreBluetooth has no "connect by MAC address" API (iOS hides the
-        // MAC and only exposes a per-app CBPeripheral.identifier UUID), so a
-        // scan-then-match-by-identifier-string is required here. Callers on
-        // iOS must pass the `CBPeripheral.identifier.UUIDString` as `address`,
-        // obtained from a prior `scan()`'s `BleScanResult.address` — this
-        // mirrors how Android's MAC address is used, just with iOS's own
-        // stable identifier instead.
+    fun connect(address: String, timeoutMs: Int) {
+        if (connected && targetPeripheral?.identifier?.UUIDString == address) {
+            listener?.onConnectionStateChanged(BleConnState.CONNECTED)
+            return
+        }
+        val peripheral = discovered[address] ?: run {
+            SdkLog.log("IosBleTransport connect(): $address no fue visto en el escaneo")
+            listener?.onConnectionStateChanged(BleConnState.DISCONNECTED)
+            return
+        }
         pendingConnectAddress = address
-        targetPeripheral?.let { if (it.identifier.UUIDString == address) { manager().connectPeripheral(it, options = null); return } }
+        targetPeripheral = peripheral
         listener?.onConnectionStateChanged(BleConnState.CONNECTING)
-        manager().scanForPeripheralsWithServices(null, options = null)
+        val gen = ++connectGeneration
+        centralManager.connectPeripheral(peripheral, options = null)
+        runAfter(timeoutMs.toLong()) {
+            if (gen == connectGeneration && !connected && pendingConnectAddress == address) {
+                SdkLog.log("IosBleTransport connect timeout")
+                centralManager.cancelPeripheralConnection(peripheral)
+                pendingConnectAddress = null
+                listener?.onConnectionStateChanged(BleConnState.DISCONNECTED)
+            }
+        }
     }
 
-    override fun disconnect() {
-        targetPeripheral?.let { centralManager?.cancelPeripheralConnection(it) }
+    fun disconnect() {
+        connectGeneration++
+        pendingConnectAddress = null
+        targetPeripheral?.let { centralManager.cancelPeripheralConnection(it) }
         connected = false
+        writeChar = null
+        notifyChar = null
         listener?.onConnectionStateChanged(BleConnState.DISCONNECTED)
     }
 
-    override fun isConnected(): Boolean = connected
-    override fun getBondedAddress(): String? = targetPeripheral?.identifier?.UUIDString
-    override fun getMtu(): Int = mtu
-    override fun setMtu(mtu: Int) { this.mtu = mtu }
+    fun isConnected(): Boolean = connected
+    fun getBondedAddress(): String? = targetPeripheral?.identifier?.UUIDString
+    fun getMtu(): Int = mtu
+    fun setMtu(mtu: Int) { if (mtu in 20..509) this.mtu = mtu }
 
-    override fun send(bytes: ByteArray) {
+    fun send(bytes: ByteArray) {
         val peripheral = targetPeripheral ?: return
         val char = writeChar ?: return
-        val data = bytes.toNSData()
-        val type = if ((char.properties and CBCharacteristicWriteWithResponse) != 0uL) CBCharacteristicWriteWithResponse else CBCharacteristicWriteWithoutResponse
-        peripheral.writeValue(data, char, type)
+        if (!connected) return
+        val type = if ((char.properties and CBCharacteristicPropertyWriteWithoutResponse) != 0uL)
+            CBCharacteristicWriteWithoutResponse else CBCharacteristicWriteWithResponse
+        peripheral.writeValue(bytes.toNSData(), char, type)
     }
 
     // -- CBCentralManagerDelegateProtocol --
 
     override fun centralManagerDidUpdateState(central: CBCentralManager) {
         SdkLog.log("IosBleTransport state:${central.state}")
+        if (central.state == CBManagerStatePoweredOn) {
+            pendingScanMs?.let { pendingScanMs = null; scan(it) }
+        }
     }
 
     override fun centralManager(central: CBCentralManager, didDiscoverPeripheral: CBPeripheral, advertisementData: Map<Any?, *>, RSSI: NSNumber) {
         val address = didDiscoverPeripheral.identifier.UUIDString
-        if (pendingConnectAddress != null) {
-            if (address == pendingConnectAddress) {
-                targetPeripheral = didDiscoverPeripheral
-                central.stopScan()
-                central.connectPeripheral(didDiscoverPeripheral, options = null)
-            }
-            return
-        }
+        discovered[address] = didDiscoverPeripheral
+        if (!scanning) return
+        val localName = advertisementData[CBAdvertisementDataLocalNameKey] as? String
+        val manufacturer = advertisementData[CBAdvertisementDataManufacturerDataKey] as? NSData
+        val raw = buildRawRecord(localName, manufacturer?.toByteArray())
         listener?.onScanResult(object : BleScanResult {
             override val address: String = address
-            override val name: String? = didDiscoverPeripheral.name
+            override val name: String? = localName ?: didDiscoverPeripheral.name
             override val rssi: Int = RSSI.intValue
-            override val rawRecord: ByteArray = ByteArray(0)
+            override val rawRecord: ByteArray = raw
         })
     }
 
@@ -148,12 +194,18 @@ class IosBleTransport : NSObject(), BleTransport, CBCentralManagerDelegateProtoc
         didConnectPeripheral.discoverServices(null)
     }
 
+    @ObjCSignatureOverride
     override fun centralManager(central: CBCentralManager, didFailToConnectPeripheral: CBPeripheral, error: NSError?) {
+        SdkLog.log("IosBleTransport didFailToConnect: ${error?.localizedDescription}")
+        connectGeneration++
+        pendingConnectAddress = null
         connected = false
         listener?.onConnectionStateChanged(BleConnState.DISCONNECTED)
     }
 
+    @ObjCSignatureOverride
     override fun centralManager(central: CBCentralManager, didDisconnectPeripheral: CBPeripheral, error: NSError?) {
+        pendingConnectAddress = null
         connected = false
         writeChar = null
         notifyChar = null
@@ -180,21 +232,65 @@ class IosBleTransport : NSObject(), BleTransport, CBCentralManagerDelegateProtoc
                 peripheral.setNotifyValue(true, forCharacteristic = c)
             }
         }
-        if (writeChar != null && notifyChar != null) {
+        if (!connected && writeChar != null && notifyChar != null) {
             connected = true
+            connectGeneration++
+            pendingConnectAddress = null
             listener?.onConnectionStateChanged(BleConnState.CONNECTED)
         }
     }
 
+    @ObjCSignatureOverride
     override fun peripheral(peripheral: CBPeripheral, didUpdateValueForCharacteristic: CBCharacteristic, error: NSError?) {
         if (didUpdateValueForCharacteristic.UUID != notifyCharUUID) return
         val data = didUpdateValueForCharacteristic.value ?: return
         listener?.onDataReceived(data.toByteArray())
     }
 
+    @ObjCSignatureOverride
     override fun peripheral(peripheral: CBPeripheral, didWriteValueForCharacteristic: CBCharacteristic, error: NSError?) {
-        // Matches Android's `onCharacteristicWrite`: nothing to do, `send()` is fire-and-forget.
+        if (error != null) SdkLog.log("IosBleTransport write error: ${error.localizedDescription}")
     }
+}
+
+/**
+ * Fachada Kotlin pura: Kotlin/Native no permite que una subclase de NSObject
+ * implemente tambien una interfaz Kotlin (BleTransport), asi que el delegado
+ * CoreBluetooth vive en [IosBleCentral] y esta clase le reenvia todo.
+ */
+class IosBleTransport internal constructor(private val c: IosBleCentral) : BleTransport {
+    override fun setListener(listener: BleTransportListener?) = c.setListener(listener)
+    override fun initUuids(notifyServiceUuid: String, notifyCharacteristicUuid: String, writeServiceUuid: String, writeCharacteristicUuid: String) =
+        c.initUuids(notifyServiceUuid, notifyCharacteristicUuid, writeServiceUuid, writeCharacteristicUuid)
+    override fun isBluetoothOpen(): Boolean = c.isBluetoothOpen()
+    override fun isSupportBle(): Boolean = c.isSupportBle()
+    override fun scan(scanTimeMs: Int) = c.scan(scanTimeMs)
+    override fun stopScan() = c.stopScan()
+    override fun connect(address: String, timeoutMs: Int) = c.connect(address, timeoutMs)
+    override fun disconnect() = c.disconnect()
+    override fun isConnected(): Boolean = c.isConnected()
+    override fun getBondedAddress(): String? = c.getBondedAddress()
+    override fun getMtu(): Int = c.getMtu()
+    override fun setMtu(mtu: Int) = c.setMtu(mtu)
+    override fun send(bytes: ByteArray) = c.send(bytes)
+}
+
+private val sharedIosBleTransport: IosBleTransport by lazy { IosBleTransport(IosBleCentral()) }
+
+/** Reconstruye estructuras AD `[len][type][data]` (0x09 nombre, 0xFF fabricante). */
+internal fun buildRawRecord(localName: String?, manufacturerData: ByteArray?): ByteArray {
+    val out = ArrayList<Byte>()
+    fun ad(type: Int, data: ByteArray) {
+        if (data.isEmpty() || data.size > 254) return
+        out.add((data.size + 1).toByte()); out.add(type.toByte()); data.forEach { out.add(it) }
+    }
+    localName?.let { ad(0x09, it.encodeToByteArray()) }
+    manufacturerData?.let { ad(0xFF, it) }
+    return out.toByteArray()
+}
+
+private fun runAfter(ms: Long, block: () -> Unit) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, ms * 1_000_000L), dispatch_get_main_queue(), block)
 }
 
 @OptIn(ExperimentalForeignApi::class)
@@ -215,5 +311,5 @@ private fun NSData.toByteArray(): ByteArray {
 }
 
 actual object BleTransportProvider {
-    actual fun create(): BleTransport = IosBleTransport()
+    actual fun create(): BleTransport = sharedIosBleTransport
 }

@@ -1,7 +1,8 @@
-# chaide-app — App Android nativa (Kotlin + Compose)
+# chaide-app — App multiplataforma Android + iOS (Kotlin + Compose Multiplatform)
 
-Reconstrucción **100% nativa** de la app Chaide Smart, basada en las pantallas reales del
-APK (ver `../app-reference/`). Consume el backend **Node.js** (`chaide-backend-node`, :5500).
+Reconstrucción **100% Kotlin** de la app Chaide Smart, basada en las pantallas reales del
+APK (ver `../app-reference/`). Un solo código genera la app Android y la app iOS.
+Consume el backend **Node.js** de pruebas (ver "Backend de pruebas").
 
 ## Pantallas (como la app real)
 1. **Welcome** — logo luna, fondo azul, botones *Sign Up* / *Log in*
@@ -13,15 +14,37 @@ APK (ver `../app-reference/`). Consume el backend **Node.js** (`chaide-backend-n
 Navegación con `navigation-compose`; barra inferior Home · Device · Me.
 
 ## Stack
-Kotlin + Jetpack Compose (Material3) + Navigation + Retrofit/OkHttp (Gson) + Coroutines.
-Tema azul marino basado en la paleta real de ChaideSmart. Módulo propio
-`m800-kmp-sdk` (Kotlin Multiplatform, ver abajo) para el protocolo BLE/TCP
-del dispositivo M800 — reemplaza los jars del fabricante.
+Kotlin 2.1 + **Compose Multiplatform 1.7** (Material3) + Navigation multiplataforma +
+**Ktor 3** (OkHttp en Android, NSURLSession en iOS) + kotlinx.serialization +
+kotlinx-datetime + multiplatform-settings + Coroutines. Tema azul marino basado en
+la paleta real de ChaideSmart. Módulo propio `m800-kmp-sdk` (Kotlin Multiplatform)
+para el protocolo BLE/TCP del dispositivo M800 — reemplaza los jars del fabricante.
+
+## Estructura multiplataforma
+
+```
+app/src/commonMain/   TODO lo compartido: pantallas Compose, navegación, red (Ktor),
+                      sesión, protocolo M800 (ble/), aprovisionamiento BLE, fechas,
+                      recursos (composeResources/: imágenes y fuentes Gotham)
+app/src/androidMain/  MainActivity, permisos Android, MediaPlayer, motor OkHttp,
+                      AndroidManifest + res/ (ícono, tema, network_security_config)
+app/src/iosMain/      MainViewController (entrada iOS), AVPlayer, motor Darwin
+iosApp/               Proyecto Xcode (SwiftUI mínimo que muestra la UI Compose)
+m800-kmp-sdk/         SDK M800: BLE (GATT Android / CoreBluetooth iOS) + TCP
+```
+
+Lo que cambia por plataforma está declarado en
+`app/src/commonMain/.../platform/Platform.kt` (`expect`) e implementado en
+`androidMain`/`iosMain` (`actual`): log, permisos BLE/ubicación, SSID actual,
+reproductor de audio, motor HTTP. Diferencias visibles en iOS:
+- El nombre de la red WiFi se escribe a mano en "Ajustes de Wi-Fi" (iOS no deja
+  leer el SSID sin un entitlement especial de Apple).
+- El permiso de Bluetooth lo pide el sistema la primera vez que se escanea.
 
 ## Backend de pruebas
 El backend NO vive en este repo (vive en `Smart-Chaide/deploy-test-api/`,
 fuera de git — ver sección siguiente). `AppConfig.kt`
-(`app/src/main/java/com/chaide/app/net/AppConfig.kt`) selecciona a cuál
+(`app/src/commonMain/kotlin/com/chaide/app/net/AppConfig.kt`) selecciona a cuál
 apuntar, con tres opciones ya escritas:
 - `REMOTE` — `https://apps.chaide.com/smartChaideTestBA/api/`, backend de
   pruebas ya desplegado, accesible desde cualquier máquina sin VPN/túnel.
@@ -42,8 +65,8 @@ El API (REST) y el gateway M800 (TCP binario, protocolo propio con frames
 - **API** → `AppConfig.TARGET` (arriba). Hoy `REMOTE`, por HTTPS.
 - **Gateway** → `GatewaySettings` (`app/.../net/Api.kt`), **no** sigue a
   `AppConfig`. Se edita en vivo en la pantalla "Add Device" (campo "Server
-  IP (gateway de pruebas)") y queda persistido en `SharedPreferences` del
-  teléfono — por eso cambiar el default en el código NO actualiza un
+  IP (gateway de pruebas)") y queda persistido en el teléfono
+  (`SharedPreferences` en Android, `NSUserDefaults` en iOS) — por eso cambiar el default en el código NO actualiza un
   teléfono que ya guardó un valor antes.
 
 **Por qué están separados y por qué el gateway NO va a `apps.chaide.com`:**
@@ -80,18 +103,30 @@ que la PC que corre el gateway — así que el gateway se queda en la LAN:
 5. Verificar en `docker logs smart_chaide_test_gateway_service -f` que
    llega la conexión del equipo al aprovisionar WiFi.
 
-Esto cubre Android e iOS (cuando exista el proyecto iOS) por igual: ambos
+Esto cubre Android e iOS por igual: ambos
 hablan HTTPS al mismo API remoto y TCP plano al mismo gateway LAN — nada de
 esto depende del sistema operativo del teléfono, solo de estar en la misma
 red que la PC del gateway.
 
 ## Correr
-1. Android Studio → **Open** → carpeta `chaide-app` → sincronizar Gradle (AGP 8.5.2 / Gradle 8.7).
-2. Emulador (minSdk 26) → **Run ▶**.
-3. En *Login* viene precargado el email; escribe tu contraseña y entra.
 
-> Emulador → host por `10.0.2.2:<puerto>` (configurado en `net/Api.kt` y `network_security_config.xml`).
-> Para dispositivo físico en la misma WiFi, usa la IP LAN de la PC que corre el backend.
+Requisitos: JDK 17. En la Mac de desarrollo están instalados en la carpeta del
+usuario (`~/Library/Java/jdk-17*`, Android SDK en `~/Library/Android/sdk`).
+
+**Android**
+```bash
+export JAVA_HOME=$(ls -d ~/Library/Java/jdk-17*/Contents/Home | head -1)
+./gradlew :app:assembleDebug          # APK en app/build/outputs/apk/debug/
+./gradlew :app:installDebug           # instala en el teléfono conectado por adb
+```
+O desde Android Studio: **Open** → raíz del repo → configuración `app` → **Run ▶**.
+
+**iOS**
+1. Editar `iosApp/Config.xcconfig`: `TEAM_ID` (tu equipo de Apple) y, si hace
+   falta, `BUNDLE_ID`.
+2. Abrir `iosApp/iosApp.xcodeproj` en Xcode → elegir el iPhone o un simulador → **Run ▶**.
+   La fase "Compile Kotlin Framework" llama a
+   `./gradlew :app:embedAndSignAppleFrameworkForXcode` (la primera vez tarda varios minutos).
 
 ## Auth
 Login contra `POST /api/auth/login` del backend de pruebas → recibe **JWT**, que se envía como
@@ -102,44 +137,18 @@ El **puntaje/duración** del sueño no se muestra aún: vive en el servicio de a
 que no está en el entorno local. La app muestra los reportes reales registrados + el
 dispositivo y el perfil reales del usuario.
 
-## Módulo M800 (Kotlin Multiplatform) — Android listo, iOS pendiente
-`m800-kmp-sdk/` (incluido en este repo, ver `m800-kmp-sdk/README.md` para el
-detalle completo) reemplaza los jars del fabricante (`m800sdk.jar`,
-`sdkcore.jar`, `wificonfigsdk.jar`, `wifidevicecommonsdk.jar`) con una
-reimplementación 100% Kotlin. El lado Android está integrado, compila y fue
-**validado contra hardware real** (escaneo BLE → bind → aprovisionamiento
-WiFi → streaming TCP en vivo). El lado iOS está **escrito pero nunca
-compilado** — no ha habido Mac disponible en ningún momento de este
-proyecto hasta ahora.
+## Módulo M800 (Kotlin Multiplatform)
+`m800-kmp-sdk/` (ver `m800-kmp-sdk/README.md`) reemplaza los jars del fabricante
+(`m800sdk.jar`, `sdkcore.jar`, `wificonfigsdk.jar`, `wifidevicecommonsdk.jar`) con
+una reimplementación 100% Kotlin.
+- **Android**: validado contra hardware real (escaneo BLE → bind →
+  aprovisionamiento WiFi → streaming TCP en vivo).
+- **iOS**: compila (simulador y dispositivo). Pendiente validarlo contra el M800
+  real. El `rawRecord` del advertisement se reconstruye desde el diccionario de
+  CoreBluetooth, así que `M800Protocol.parseLocalName`/`parseSerial` funcionan igual.
 
-## Continuar este proyecto desde otra máquina (p. ej. una Mac, para iOS)
-
-**Qué trae `git clone` de este repo (y qué NO):**
-- ✅ `chaide-app/` completo, incluyendo `m800-kmp-sdk/` (el SDK M800 KMP,
-  con sus tres source sets `commonMain`/`androidMain`/`iosMain`) — es
-  autocontenido, compila solo con Gradle, sin dependencias fuera del repo.
-- ❌ El backend de pruebas (`Smart-Chaide/deploy-test-api/`), el gateway TCP
-  (`Smart-Chaide/m800-gateway/`), los paneles de administración
-  (`Smart-Chaide/admin-web/`, `deploy-test-api/admin-ui/`) y el entorno
-  local de réplica de producción (`Smart-Chaide/local-env/`) — todos viven
-  en la carpeta raíz `Smart-Chaide/`, que **no es un repositorio git**.
-  Esos quedan solo en esta PC Windows a menos que se transfieran aparte
-  (zip, otro repo, etc.). Para seguir con iOS no son necesarios de entrada:
-  usa el target `REMOTE` de `AppConfig.kt` (arriba) si en algún momento
-  quieres probar el flujo completo contra un backend real sin replicar
-  nada de esto.
-
-**Pasos recomendados en la Mac:**
-1. `git clone https://github.com/TechChaide/Smart-Chaide-APP.git && cd Smart-Chaide-APP`
-2. Abrir `m800-kmp-sdk/README.md` — tiene el estado real actualizado, el bug
-   bloqueante conocido en iOS (`BleTransport.ios.kt`, `rawRecord` siempre
-   vacío — CoreBluetooth no expone los bytes crudos del advertisement BLE
-   como sí lo hace Android) y el orden de trabajo recomendado (compilar
-   primero sin tocar nada, arreglar `rawRecord`, agregar empaquetado
-   `cocoapods {}`/`framework {}`, y solo después decidir el alcance de un
-   proyecto iOS/SwiftUI real — que no existe todavía, ni una sola pantalla).
-3. Resumen visual (sin credenciales, para repasar sin leer el README crudo):
-   https://claude.ai/artifact/JR1Eqt3QmeQMUpPVqL9ZWx
-4. Abrir solo `m800-kmp-sdk/` en Xcode/Gradle para compilar los targets
-   `iosX64`/`iosSimulatorArm64` primero — no hace falta Android Studio ni
-   el resto del repo para ese primer paso.
+## Qué NO trae este repo
+El backend de pruebas (`Smart-Chaide/deploy-test-api/`), el gateway TCP
+(`Smart-Chaide/m800-gateway/`), los paneles de administración y el entorno local
+viven fuera de git, en la PC Windows. Para probar no hacen falta: el API está
+desplegado (`REMOTE`) y el gateway corre en la LAN de pruebas (ver arriba).

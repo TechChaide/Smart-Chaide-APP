@@ -1,0 +1,5 @@
+// Ajustes de firma: EDITAR AQUI antes de instalar en un iPhone real.
+// TEAM_ID: Xcode > Settings > Accounts > (tu Apple ID) > Team ID (10 caracteres).
+// BUNDLE_ID: debe ser unico en Apple; si Xcode dice que ya existe, cambia el sufijo.
+TEAM_ID = WA4X82GB4M
+BUNDLE_ID = com.chaide.smart.pruebas
