@@ -12,7 +12,7 @@ import platform.CoreBluetooth.CBCentralManager
 import platform.CoreBluetooth.CBCentralManagerDelegateProtocol
 import platform.CoreBluetooth.CBCentralManagerScanOptionAllowDuplicatesKey
 import platform.CoreBluetooth.CBCharacteristic
-import platform.CoreBluetooth.CBCharacteristicPropertyWriteWithoutResponse
+import platform.CoreBluetooth.CBCharacteristicPropertyWrite
 import platform.CoreBluetooth.CBCharacteristicWriteWithResponse
 import platform.CoreBluetooth.CBCharacteristicWriteWithoutResponse
 import platform.CoreBluetooth.CBManagerStatePoweredOn
@@ -159,8 +159,11 @@ class IosBleCentral internal constructor() : NSObject(),
         val peripheral = targetPeripheral ?: return
         val char = writeChar ?: return
         if (!connected) return
-        val type = if ((char.properties and CBCharacteristicPropertyWriteWithoutResponse) != 0uL)
-            CBCharacteristicWriteWithoutResponse else CBCharacteristicWriteWithResponse
+        // Con confirmacion siempre que la caracteristica lo soporte: sin ella
+        // CoreBluetooth puede descartar paquetes enviados muy seguidos (el SDK
+        // manda varios frames de 20 B en rafaga al aprovisionar el WiFi).
+        val type = if ((char.properties and CBCharacteristicPropertyWrite) != 0uL)
+            CBCharacteristicWriteWithResponse else CBCharacteristicWriteWithoutResponse
         peripheral.writeValue(bytes.toNSData(), char, type)
     }
 

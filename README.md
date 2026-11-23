@@ -41,28 +41,24 @@ reproductor de audio, motor HTTP. Diferencias visibles en iOS:
   leer el SSID sin un entitlement especial de Apple).
 - El permiso de Bluetooth lo pide el sistema la primera vez que se escanea.
 
-## Backend de pruebas
-El backend NO vive en este repo (vive en `Smart-Chaide/deploy-test-api/`,
-fuera de git — ver sección siguiente). `AppConfig.kt`
-(`app/src/commonMain/kotlin/com/chaide/app/net/AppConfig.kt`) selecciona a cuál
-apuntar, con tres opciones ya escritas:
-- `REMOTE` — `https://apps.chaide.com/smartChaideTestBA/api/`, backend de
-  pruebas ya desplegado, accesible desde cualquier máquina sin VPN/túnel.
-  **Es la opción más simple para arrancar en una máquina nueva** (Mac
-  incluida) porque no requiere replicar el stack Docker local.
-- `LOCAL_LAN` — stack Docker local (`docker-compose.local.yml`, puerto
-  5501) vía la IP WiFi de la PC que lo corre; el celular físico la alcanza
-  por ahí. Es la que mantiene la app y `admin-web/`/`deploy-test-api/admin-ui/`
-  viendo los mismos datos.
-- `LOCAL_USB` — `127.0.0.1:5500` + `adb reverse tcp:5500 tcp:5501` (USB).
+## Rutas de la app (las ÚNICAS que se usan)
 
-Hoy el target activo es **`REMOTE`** (`apps.chaide.com/smartChaideTestBA`).
+| Uso | Ruta |
+|---|---|
+| API que guarda los datos (login, perfil, dispositivos, reportes, bind) | `https://apps.chaide.com/smartChaideTestBA/api/` — fija en `AppConfig.kt` |
+| Gateway M800, datos en vivo | `192.168.205.95` (29010 discovery, 29011 datos, 29012 `/realtime`) — default de `GatewaySettings` en `Api.kt`, editable en "Add Device" → "Server IP" |
+
+Cuenta de pruebas: **`tecnologia@chaideychaide.com`**.
+
+El backend no vive en este repo (está en `Smart-Chaide/deploy-test-api/`, fuera
+de git). Se quitaron las opciones locales (`LOCAL_LAN`/`LOCAL_USB`) para que la
+app no pueda apuntar a otro backend por error.
 
 ## Gateway de pruebas (M800, TCP crudo) — topología híbrida a propósito
 
 El API (REST) y el gateway M800 (TCP binario, protocolo propio con frames
 `$_@-`) son **dos servidores independientes**, configurados por separado:
-- **API** → `AppConfig.TARGET` (arriba). Hoy `REMOTE`, por HTTPS.
+- **API** → `AppConfig.BASE_URL` (arriba), por HTTPS.
 - **Gateway** → `GatewaySettings` (`app/.../net/Api.kt`), **no** sigue a
   `AppConfig`. Se edita en vivo en la pantalla "Add Device" (campo "Server
   IP (gateway de pruebas)") y queda persistido en el teléfono
@@ -84,7 +80,7 @@ que la PC que corre el gateway — así que el gateway se queda en la LAN:
 
 | Pieza | Dónde corre | Cómo se llega |
 |---|---|---|
-| API (login, perfil, dispositivos, reportes, bind) | `apps.chaide.com/smartChaideTestBA` | HTTPS, desde cualquier red (`AppConfig.TARGET = REMOTE`) |
+| API (login, perfil, dispositivos, reportes, bind) | `apps.chaide.com/smartChaideTestBA` | HTTPS, desde cualquier red (`AppConfig.BASE_URL`) |
 | Gateway M800 (discovery `29010`, datos `29011`, HTTP `/realtime` `29012`) | Esta PC (`docker-compose.local.yml` en `deploy-test-api/gateway-smart-chaide/`), contenedor `smart_chaide_test_gateway_service` | TCP plano, **solo LAN** — IP WiFi actual de la PC, puesta en "Add Device" → "Server IP" |
 
 **Pasos para dejarlo apuntando bien (cada vez que la IP de la PC cambie):**

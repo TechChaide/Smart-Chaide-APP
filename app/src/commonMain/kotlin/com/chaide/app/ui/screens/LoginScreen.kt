@@ -18,6 +18,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.chaide.app.net.Api
+import com.chaide.app.net.ApiException
 import com.chaide.app.net.LoginRequest
 import com.chaide.app.net.Session
 import com.chaide.app.ui.theme.*
@@ -30,7 +31,7 @@ import kotlinx.coroutines.withContext
  * azul plano, campos subrayados (sin caja), checkbox de términos obligatorio. */
 @Composable
 fun LoginScreen(onBack: () -> Unit, onSuccess: () -> Unit) {
-    var email by remember { mutableStateOf("crisandrade94.ca@gmail.com") }
+    var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var showPass by remember { mutableStateOf(false) }
     var acceptedTerms by remember { mutableStateOf(false) }
@@ -94,6 +95,11 @@ fun LoginScreen(onBack: () -> Unit, onSuccess: () -> Unit) {
                         val r = withContext(Dispatchers.IO) { Api.service.login(LoginRequest(email.trim(), password)) }
                         if (r.token != null) { Session.token = r.token; Session.user = r.user; onSuccess() }
                         else error = r.message ?: "Could not log in"
+                    } catch (e: ApiException) {
+                        // 4xx = credenciales/cuenta (el backend responde 401 USER_NOT_FOUND,
+                        // contrasena incorrecta, etc.); 5xx = problema del servidor.
+                        error = if (e.status in 400..499) e.errorMessage ?: "Incorrect email or password"
+                                else "Server error (${e.status}). Try again later."
                     } catch (e: Exception) { error = "No connection to server" }
                     finally { loading = false }
                 }
@@ -101,10 +107,10 @@ fun LoginScreen(onBack: () -> Unit, onSuccess: () -> Unit) {
             enabled = canLogin,
             modifier = Modifier.fillMaxWidth().height(56.dp),
             shape = androidx.compose.foundation.shape.RoundedCornerShape(28.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = BtnFill, contentColor = TextHi,
+            colors = ButtonDefaults.buttonColors(containerColor = BtnFill, contentColor = BtnText,
                 disabledContainerColor = Night2, disabledContentColor = Faint)
         ) {
-            if (loading) CircularProgressIndicator(color = TextHi, modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+            if (loading) CircularProgressIndicator(color = BtnText, modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
             else Text("Log in", style = MaterialTheme.typography.labelLarge)
         }
     }

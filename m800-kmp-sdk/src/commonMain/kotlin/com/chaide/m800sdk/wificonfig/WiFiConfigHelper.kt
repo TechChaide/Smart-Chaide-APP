@@ -1,5 +1,7 @@
 package com.chaide.m800sdk.wificonfig
 
+import com.chaide.m800sdk.platform.BackgroundThread
+
 import com.chaide.m800sdk.ble.BleConnState
 import com.chaide.m800sdk.ble.BleScanResult
 import com.chaide.m800sdk.ble.BleTransport
@@ -63,8 +65,11 @@ class WiFiConfigHelper private constructor(
         }
     }
 
-    init {
-        bleTransport.setListener(object : BleTransportListener {
+    // El transporte BLE es compartido (uno por proceso) y la app tambien le pone
+    // su propio listener para escanear. Antes este listener se registraba SOLO
+    // en init, asi que desde el segundo aprovisionamiento el helper ya no
+    // recibia eventos y se quedaba colgado: ahora se re-registra en cada uso.
+    private val transportListener = object : BleTransportListener {
             override fun onScanResult(result: BleScanResult) {
                 if (pendingCallbacks.containsKey(CALLBACK_TYPE_CONFIG_WIFI_BLE) && result.address == getAddress()) {
                     SdkLog.log("$tag config scan-------ok")
@@ -87,7 +92,10 @@ class WiFiConfigHelper private constructor(
             override fun onDataReceived(data: ByteArray) {
                 if (isBleProtocol()) handleBleData(data) else handleData(data)
             }
-        })
+        }
+
+    init {
+        bleTransport.setListener(transportListener)
         registCallBack(object : com.chaide.m800sdk.callback.IBaseCallback {
             override fun onStateChanged(manager: IDeviceManager?, state: ConnectionState) {
                 SdkLog.log("$tag onStateChanged-----state:$state")
@@ -117,11 +125,19 @@ class WiFiConfigHelper private constructor(
     private fun onBleStateChanged(state: ConnectionState) {
         callbackState(state)
         if (state == ConnectionState.CONNECTED) {
-            when {
-                pendingCallbacks.containsKey(CALLBACK_TYPE_CONFIG_WIFI_BLE) -> bleWiFiConfigInternal()
-                pendingCallbacks.containsKey(CALLBACK_TYPE_APN_SET) -> apnSetInternal()
-                pendingCallbacks.containsKey(CALLBACK_TYPE_APN_GET) -> apnGetInternal()
+            // El envio de la config es BLOQUEANTE (sleep + espera de cada
+            // respuesta hasta 3 s). Antes corria dentro de este callback: en
+            // Android llega en un hilo de binder y funcionaba, pero en iOS
+            // CoreBluetooth lo entrega en el hilo PRINCIPAL -> la UI se
+            // congelaba, las respuestas del equipo (tambien en el hilo
+            // principal) nunca se procesaban y iOS terminaba cerrando la app.
+            val job: (() -> Unit)? = when {
+                pendingCallbacks.containsKey(CALLBACK_TYPE_CONFIG_WIFI_BLE) -> ::bleWiFiConfigInternal
+                pendingCallbacks.containsKey(CALLBACK_TYPE_APN_SET) -> ::apnSetInternal
+                pendingCallbacks.containsKey(CALLBACK_TYPE_APN_GET) -> ::apnGetInternal
+                else -> null
             }
+            job?.let { BackgroundThread("wifi-config") { it() }.start() }
         } else if (state == ConnectionState.DISCONNECT) {
             when {
                 pendingCallbacks.containsKey(CALLBACK_TYPE_CONFIG_WIFI_BLE) -> resultCallback(CALLBACK_TYPE_CONFIG_WIFI_BLE, StatusCode.DISCONNECT, null)
@@ -172,8 +188,12 @@ class WiFiConfigHelper private constructor(
     ) {
         SdkLog.log("$tag bleWiFiConfig deviceType:$deviceType,ip:$serverIP,port:$serverPort")
         if (pendingCallbacks.containsKey(CALLBACK_TYPE_CONFIG_WIFI_BLE)) {
-            SdkLog.log("$tag config repeat-------")
-            return
+            // Un intento anterior quedo sin respuesta: antes se salia sin avisar
+            // (el llamador esperaba para siempre). Se descarta y se reintenta.
+            SdkLog.log("$tag config repeat------- descartando intento anterior")
+            pendingCallbacks.remove(CALLBACK_TYPE_CONFIG_WIFI_BLE)
+            bleTransport.stopScan()
+            bleTransport.disconnect()
         }
         pendingCallbacks[CALLBACK_TYPE_CONFIG_WIFI_BLE] = callback
         if (!bleTransport.isBluetoothOpen()) {
@@ -207,6 +227,7 @@ class WiFiConfigHelper private constructor(
                 "0000ffe5-0000-1000-8000-00805f9b34fb", "0000ffe9-0000-1000-8000-00805f9b34fb"
             )
         }
+        bleTransport.setListener(transportListener)
         bleTransport.scan()
     }
 
@@ -224,6 +245,7 @@ class WiFiConfigHelper private constructor(
             "0000ffe0-0000-1000-8000-00805f9b34fb", "0000ffe4-0000-1000-8000-00805f9b34fb",
             "0000ffe5-0000-1000-8000-00805f9b34fb", "0000ffe9-0000-1000-8000-00805f9b34fb"
         )
+        bleTransport.setListener(transportListener)
         bleTransport.connect(btAddress)
     }
 
@@ -240,6 +262,7 @@ class WiFiConfigHelper private constructor(
             "0000ffe0-0000-1000-8000-00805f9b34fb", "0000ffe4-0000-1000-8000-00805f9b34fb",
             "0000ffe5-0000-1000-8000-00805f9b34fb", "0000ffe9-0000-1000-8000-00805f9b34fb"
         )
+        bleTransport.setListener(transportListener)
         bleTransport.connect(btAddress)
     }
 

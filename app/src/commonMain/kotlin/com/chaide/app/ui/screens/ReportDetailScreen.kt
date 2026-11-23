@@ -435,7 +435,10 @@ private fun TrendContent(period: Period, offset: Int) {
         Column(Modifier.fillMaxSize().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Spacer(Modifier.height(80.dp))
             Text(
-                "The current week hasn't ended yet.\nCheck your sleep report on the first day of next month.",
+                if (period == Period.WEEK)
+                    "The current week hasn't ended yet.\nCheck your sleep report on the first day of next week."
+                else
+                    "The current month hasn't ended yet.\nCheck your sleep report on the first day of next month.",
                 color = Faint, style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center,
             )
         }

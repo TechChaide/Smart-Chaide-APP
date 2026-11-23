@@ -25,7 +25,7 @@ import com.chaide.app.ui.theme.*
  *   - `notification`    -> "Notification"      (push a /notification)
  *   - `license`         -> "License Agreement" (push a /license)
  *   - `cur_app_version` -> "Current Version: V{value}"
- *   - `check_update` / `newest_version` -> "Version Updates" / "Lastest Version"
+ *   - `check_update` / `newest_version` -> "Version Updates" / "Latest Version"
  */
 @Composable
 fun SettingsScreen(onBack: () -> Unit) {
@@ -62,7 +62,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text("Version Updates", color = TextHi, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                Text("Lastest Version", color = Faint, style = MaterialTheme.typography.bodyMedium)
+                Text("Latest Version", color = Faint, style = MaterialTheme.typography.bodyMedium)
                 Icon(Icons.Filled.ChevronRight, null, tint = Faint)
             }
             HorizontalDivider(color = Hairline)

@@ -11,14 +11,82 @@ import XCTest
 ///   launch            relanza la app desde cero (si no, se reutiliza la que este abierta)
 ///   tap:X,Y           toca en coordenadas normalizadas 0..1 (x,y) de la pantalla
 ///   tapText:TEXTO     toca el primer elemento cuya etiqueta contenga TEXTO
-///   type:TEXTO        escribe TEXTO en el campo enfocado
-///   clear             borra el campo enfocado
+///   type:TEXTO        escribe TEXTO tocando las teclas del teclado (toca antes el campo)
+///   keys              vuelca las teclas visibles del teclado (diagnostico)
+///   clear             borra el campo enfocado (40 x tecla borrar)
 ///   swipeUp / swipeDown
 ///   wait:SEG          espera SEG segundos
 ///   allow             acepta un dialogo de permiso del sistema si aparece
 ///   shot:NOMBRE       captura de pantalla (adjunta al resultado)
 ///   tree              vuelca el arbol de accesibilidad (adjunto de texto)
 final class RemoteControlUITests: XCTestCase {
+
+    // ---- Escritura tocando el teclado del sistema ----
+    // `typeText` de XCUITest falla con Compose Multiplatform ("Neither element nor
+    // any descendant has keyboard focus"): el campo de Compose no se expone como
+    // elemento enfocado. El teclado de iOS si es accesible, asi que se escribe
+    // tocando sus teclas una por una.
+
+    private func visibleKey(_ app: XCUIApplication, label: String) -> XCUIElement? {
+        let p = NSPredicate(format: "label == %@ OR identifier == %@", label, label)
+        for q in [app.keyboards.keys.matching(p), app.keyboards.buttons.matching(p)] {
+            let e = q.firstMatch
+            if e.exists && e.isHittable { return e }
+        }
+        return nil
+    }
+
+    private func modeKey(_ app: XCUIApplication, _ hints: [String]) -> XCUIElement? {
+        for h in hints {
+            let p = NSPredicate(format: "label ==[c] %@ OR identifier ==[c] %@ OR label CONTAINS[c] %@", h, h, h)
+            for q in [app.keyboards.keys.matching(p), app.keyboards.buttons.matching(p)] {
+                let e = q.firstMatch
+                if e.exists && e.isHittable { return e }
+            }
+        }
+        return nil
+    }
+
+    private let numbersHints = ["more, numbers", "más, números", "numbers", "números", "123"]
+    private let symbolsHints = ["more, symbols", "más, símbolos", "symbols", "símbolos", "#+="]
+    private let lettersHints = ["more, letters", "más, letras", "letters", "letras", "ABC"]
+    private let shiftHints = ["shift", "mayúsculas", "mayús"]
+
+    private func tapChar(_ ch: String, in app: XCUIApplication) -> Bool {
+        if let k = visibleKey(app, label: ch) { k.tap(); return true }
+        // Mayuscula: activar shift (una vez) y buscar de nuevo.
+        if ch.uppercased() == ch, ch.lowercased() != ch, let s = modeKey(app, shiftHints) {
+            s.tap()
+            if let k = visibleKey(app, label: ch) { k.tap(); return true }
+        }
+        // Numeros y luego simbolos; al terminar volver a letras.
+        if let n = modeKey(app, numbersHints) {
+            n.tap()
+            if let k = visibleKey(app, label: ch) { k.tap(); modeKey(app, lettersHints)?.tap(); return true }
+            if let s = modeKey(app, symbolsHints) {
+                s.tap()
+                if let k = visibleKey(app, label: ch) { k.tap(); modeKey(app, lettersHints)?.tap(); return true }
+            }
+            modeKey(app, lettersHints)?.tap()
+        }
+        return false
+    }
+
+    func typeViaKeyboard(_ text: String, in app: XCUIApplication) {
+        guard app.keyboards.firstMatch.waitForExistence(timeout: 3) else {
+            XCTFail("No hay teclado visible: toca primero el campo"); return
+        }
+        for ch in text {
+            if !tapChar(String(ch), in: app) { XCTFail("Tecla no encontrada: \(ch)") }
+        }
+    }
+
+    func clearViaKeyboard(in app: XCUIApplication) {
+        guard app.keyboards.firstMatch.waitForExistence(timeout: 3),
+              let del = modeKey(app, ["delete", "borrar", "eliminar"]) else { return }
+        for _ in 0..<40 { del.tap() }
+    }
+
 
     func testRun() throws {
         continueAfterFailure = true
@@ -52,8 +120,15 @@ final class RemoteControlUITests: XCTestCase {
             case "tapText":
                 let q = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS[c] %@", arg)).firstMatch
                 if q.waitForExistence(timeout: 5) { q.tap() } else { XCTFail("no encontrado: \(arg)") }
-            case "type": app.typeText(arg)
-            case "clear": app.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 60))
+            case "type": typeViaKeyboard(arg, in: app)
+            case "clear": clearViaKeyboard(in: app)
+            case "keys":
+                // Diagnostico: lista las teclas visibles del teclado (identifier | label).
+                let names = app.keyboards.keys.allElementsBoundByIndex.map { "\($0.identifier) | \($0.label)" }
+                let a = XCTAttachment(string: names.joined(separator: "\n"))
+                a.name = String(format: "%02d_keys", i)
+                a.lifetime = .keepAlways
+                add(a)
             case "swipeUp": app.swipeUp()
             case "swipeDown": app.swipeDown()
             case "wait": Thread.sleep(forTimeInterval: Double(arg) ?? 1)

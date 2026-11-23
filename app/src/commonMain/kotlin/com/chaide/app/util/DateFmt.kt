@@ -14,7 +14,9 @@ import kotlinx.datetime.todayIn
  * Reemplazo multiplataforma de SimpleDateFormat/Calendar (solo JVM). Todas
  * las horas se formatean en la zona horaria LOCAL del telefono, igual que
  * hacia SimpleDateFormat sin TimeZone explicita (ver notas en ReportDetailScreen).
- * Nombres de mes/dia: espanol si el telefono esta en espanol, si no ingles.
+ * Nombres de mes/dia en ingles, como el resto de la interfaz (antes salian en
+ * espanol con la UI en ingles, p.ej. "oct.2026"). Los tips si siguen el idioma
+ * del telefono (apiLang), porque son contenido del backend.
  */
 object DateFmt {
     private val tz get() = TimeZone.currentSystemDefault()
@@ -24,7 +26,6 @@ object DateFmt {
     private val monthsEs = listOf("ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sept", "oct", "nov", "dic")
     // ISO: lunes = 1 ... domingo = 7
     private val daysEn = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-    private val daysEs = listOf("lun", "mar", "mié", "jue", "vie", "sáb", "dom")
 
     fun local(epochSec: Long): LocalDateTime = Instant.fromEpochSeconds(epochSec).toLocalDateTime(tz)
 
@@ -36,8 +37,8 @@ object DateFmt {
     /** Minutos desde medianoche, hora local. */
     fun minutesOfDay(epochSec: Long): Int = local(epochSec).let { it.hour * 60 + it.minute }
 
-    /** "MMM" segun idioma del telefono. */
-    fun monthShort(month: Int, english: Boolean = !isEs): String =
+    /** "MMM" (ingles por defecto). */
+    fun monthShort(month: Int, english: Boolean = true): String =
         (if (english) monthsEn else monthsEs)[month - 1]
 
     /** "MMM.yyyy" del mes calendario actual menos [offset] meses (p.ej. "Sep.2026"). */
@@ -49,9 +50,9 @@ object DateFmt {
     /** "MMM d" en ingles (como Locale.US del codigo original). */
     fun monthDayUs(epochSec: Long): String = local(epochSec).let { "${monthShort(it.monthNumber, english = true)} ${it.dayOfMonth}" }
 
-    /** "EEE" segun idioma del telefono. */
+    /** "EEE" en ingles. */
     fun weekdayShort(epochSec: Long): String =
-        (if (isEs) daysEs else daysEn)[local(epochSec).dayOfWeek.ordinal]
+        daysEn[local(epochSec).dayOfWeek.ordinal]
 
     /** "d" */
     fun dayOfMonth(epochSec: Long): String = local(epochSec).dayOfMonth.toString()

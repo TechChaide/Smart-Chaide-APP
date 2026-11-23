@@ -1,39 +1,21 @@
 package com.chaide.app.net
 
 /**
- * Apunta la app al backend de pruebas. Tres opciones:
- *  - REMOTE: desplegado en apps.chaide.com (base de datos REMOTA, 192.168.1.210,
- *    desincronizada de la local desde que empezamos a probar en ambos lados).
- *  - LOCAL_LAN: el stack local (docker-compose.local.yml, puerto 5501) via la
- *    IP de la PC en la red WiFi — el celular fisico lo alcanza por ahi. Esta
- *    es la base que administra admin-web/ (127.0.0.1:13307), asi que usar
- *    esta opcion mantiene app + admin hablando con LOS MISMOS datos.
- *  - LOCAL_USB: 127.0.0.1 + `adb reverse tcp:5500 tcp:5501` (USB).
+ * Rutas de la app — SOLO estas dos (decision del equipo, 2026-11-23):
+ *
+ *  1. API REST (login, perfil, dispositivos, reportes, bind) — guarda los datos:
+ *     https://apps.chaide.com/smartChaideTestBA/api/  (HTTPS, Traefik en
+ *     SRVWEB2CHAIDE 192.168.1.210, accesible desde cualquier red).
+ *
+ *  2. Gateway M800 (datos en vivo, TCP binario + HTTP /realtime):
+ *     192.168.205.95 — puertos 29010 (discovery), 29011 (datos), 29012 (/realtime).
+ *     Vive en GatewaySettings (Api.kt), NO aqui: se queda en la LAN interna
+ *     porque el M800 habla TCP crudo (no HTTP/TLS) y abrir ese puerto en el
+ *     servidor publico se descarto por riesgo.
+ *
+ * Se quitaron las opciones LOCAL_LAN / LOCAL_USB (stack Docker local) para que
+ * la app no pueda apuntar a ningun otro backend por error.
  */
 object AppConfig {
-    private enum class Target { REMOTE, LOCAL_LAN, LOCAL_USB }
-    // REMOTE: el backend ya esta expuesto por HTTPS en apps.chaide.com (Traefik,
-    // servidor SRVWEB2CHAIDE 192.168.1.210), asi que no hace falta exponer nada
-    // nuevo a internet para el API. El m800-gateway (protocolo TCP binario, no
-    // HTTP/TLS) SI se queda en la LAN interna (ver GatewaySettings en Api.kt,
-    // valor independiente de este BASE_URL) porque los equipos de prueba (M800
-    // reales + celulares) estan todos en la misma red interna de la empresa que
-    // esta PC -- no necesita salir a internet, y abrir un puerto TCP crudo nuevo
-    // en el servidor publico se descarto por riesgo (comparte firewall con otras
-    // apps con .env sensibles).
-    private val TARGET = Target.REMOTE
-
-    private const val REMOTE_TEST_BASE_URL = "https://apps.chaide.com/smartChaideTestBA/api/"
-
-    // IP de la PC en la WiFi (ver `Get-NetIPAddress`) — cambia si se reconecta
-    // a otra red; el stack local corre en el puerto 5501 (docker-compose.local.yml).
-    private const val LOCAL_LAN_BASE_URL = "http://192.168.206.89:5501/api/"
-
-    private const val LOCAL_USB_BASE_URL = "http://127.0.0.1:5500/api/"
-
-    val BASE_URL: String = when (TARGET) {
-        Target.REMOTE -> REMOTE_TEST_BASE_URL
-        Target.LOCAL_LAN -> LOCAL_LAN_BASE_URL
-        Target.LOCAL_USB -> LOCAL_USB_BASE_URL
-    }
+    const val BASE_URL: String = "https://apps.chaide.com/smartChaideTestBA/api/"
 }
