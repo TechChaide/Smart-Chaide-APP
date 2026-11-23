@@ -14,6 +14,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import com.chaide.app.i18n.AppLanguage
+import com.chaide.app.i18n.LocalStrings
+import com.chaide.app.i18n.LocaleSettings
 import com.chaide.app.ui.theme.*
 
 /**
@@ -29,13 +32,14 @@ import com.chaide.app.ui.theme.*
  */
 @Composable
 fun SettingsScreen(onBack: () -> Unit) {
+    val strings = LocalStrings.current
     // `temperatureType` vive en user_ext, una tabla que este backend todavía
     // no expone; el toggle es local por ahora (no se inventa un valor remoto).
     var celsius by remember { mutableStateOf(true) }
 
     Scaffold(
         containerColor = Night,
-        topBar = { ChaideTopBar("Configure", onBack) },
+        topBar = { ChaideTopBar(strings.configure, onBack) },
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize().padding(horizontal = 20.dp)) {
             Spacer(Modifier.height(8.dp))
@@ -45,15 +49,28 @@ fun SettingsScreen(onBack: () -> Unit) {
                 Modifier.fillMaxWidth().padding(vertical = 18.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Unit", color = TextHi, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                Text(strings.unit, color = TextHi, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                 UnitToggle(celsius) { celsius = it }
             }
             HorizontalDivider(color = Hairline)
 
-            SettingRow("Notification") { }
+            // Fila "Language": NO existe en la app real (ésta solo seguía el
+            // idioma del sistema) — es nueva, pedida explícitamente: la app
+            // arranca siempre en español y el usuario la cambia a mano aquí,
+            // guardado via LocaleSettings (persistido, ver i18n/AppLanguage.kt).
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 18.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(strings.language, color = TextHi, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                LanguageToggle(LocaleSettings.language, strings) { LocaleSettings.language = it }
+            }
             HorizontalDivider(color = Hairline)
 
-            SettingRow("License Agreement") { }
+            SettingRow(strings.notification) { }
+            HorizontalDivider(color = Hairline)
+
+            SettingRow(strings.licenseAgreement) { }
             HorizontalDivider(color = Hairline)
 
             // "Version Updates" + la versión actual, como en la app real.
@@ -61,18 +78,38 @@ fun SettingsScreen(onBack: () -> Unit) {
                 Modifier.fillMaxWidth().clickable { }.padding(vertical = 18.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Version Updates", color = TextHi, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                Text("Lastest Version", color = Faint, style = MaterialTheme.typography.bodyMedium)
+                Text(strings.versionUpdates, color = TextHi, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                Text(strings.lastestVersion, color = Faint, style = MaterialTheme.typography.bodyMedium)
                 Icon(Icons.Filled.ChevronRight, null, tint = Faint)
             }
             HorizontalDivider(color = Hairline)
 
             Spacer(Modifier.weight(1f))
             Text(
-                "Current Version: V1.0.7",
+                strings.currentVersion("1.0.7"),
                 color = Faint,
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 28.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun LanguageToggle(current: AppLanguage, strings: com.chaide.app.i18n.AppStrings, onChange: (AppLanguage) -> Unit) {
+    Row(
+        Modifier.clip(RoundedCornerShape(16.dp)).background(Night3)
+    ) {
+        listOf(strings.languageSpanish to AppLanguage.ES, strings.languageEnglish to AppLanguage.EN).forEach { (label, lang) ->
+            val on = current == lang
+            Text(
+                label,
+                color = if (on) Color.White else Faint,
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier
+                    .clickable { onChange(lang) }
+                    .background(if (on) Indigo else Color.Transparent)
+                    .padding(horizontal = 14.dp, vertical = 8.dp)
             )
         }
     }

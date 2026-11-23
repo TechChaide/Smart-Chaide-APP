@@ -32,6 +32,7 @@ import com.chaide.app.net.BindDeviceRequest
 import com.chaide.app.platform.currentWifiSsid
 import com.chaide.app.platform.platformName
 import com.chaide.app.platform.rememberBlePermission
+import com.chaide.app.platform.rememberWifiPicker
 import com.chaide.app.platform.rememberWifiSsidPermission
 import com.chaide.app.ui.theme.*
 import kotlinx.coroutines.Dispatchers
@@ -97,10 +98,6 @@ fun AddDeviceScreen(onBack: () -> Unit, onBound: () -> Unit = {}) {
     // Herramientas que NO existen en la pantalla real (sonda cruda, override
     // manual de IP/puerto del servidor): ocultas por defecto.
     var showDebugTools by remember { mutableStateOf(false) }
-    // SSID/password SI son parte del flujo real ("Ajustes de Wi-Fi" tras
-    // vincular) — confirmado contra la app oficial instalada en el equipo.
-    var wifiSsid by remember { mutableStateOf("") }
-    var wifiPass by remember { mutableStateOf("") }
     // Persistido (GatewaySettings), no hardcodeado: esta IP cambia cada vez
     // que se reaprovisiona el equipo en otra red, y Home/LiveMonitorScreen
     // leen este mismo valor para el endpoint /realtime del gateway. La app
@@ -108,19 +105,6 @@ fun AddDeviceScreen(onBack: () -> Unit, onBound: () -> Unit = {}) {
     // queda como ajuste avanzado para poder apuntar a nuestro gateway de pruebas.
     var serverIp by remember { mutableStateOf(com.chaide.app.net.GatewaySettings.ip) }
     var serverPort by remember { mutableStateOf("29010") }
-
-    // Autorelleno del SSID con la red a la que el teléfono YA está conectado
-    // (mismo patrón que la demo oficial del fabricante, `getSSID()` en
-    // BleConfigSdkDemo_M901L/MainActivity.java) — el usuario no debería tener
-    // que escribirlo a mano; el flujo real es "conecta tu teléfono a la WiFi
-    // del colchón" y la app lo detecta solo. Reintenta cuando se llega al
-    // paso de WiFi o cuando se concede el permiso de ubicacion (necesario
-    // para leer el SSID, aparte del permiso de escaneo BLE).
-    LaunchedEffect(wifiStep, hasLocationPerm) {
-        if (!wifiStep || !hasLocationPerm) return@LaunchedEffect
-        // null = sin WiFi activa o plataforma sin acceso (iOS): se edita a mano.
-        currentWifiSsid()?.let { wifiSsid = it }
-    }
 
     DisposableEffect(Unit) { onDispose { scanner?.stop() } }
 
@@ -226,17 +210,15 @@ fun AddDeviceScreen(onBack: () -> Unit, onBound: () -> Unit = {}) {
                     CircularProgressIndicator(color = TextHi)
                 }
                 existingDeviceName != null -> AlreadyHasDevice(existingDeviceName!!, onBack)
-                wifiStep -> WifiSettingsStep(
-                    ssid = wifiSsid, onSsidChange = { wifiSsid = it },
-                    password = wifiPass, onPasswordChange = { wifiPass = it },
+                wifiStep -> WifiNetworkStep(
                     provisioning = provisioning, failure = failure,
                     hasLocationPerm = hasLocationPerm,
                     onRequestLocation = ssidPermission.request,
-                    onContinue = {
+                    onContinue = { ssid, password ->
                         failure = null; provisioning = true
                         val p = scanner ?: M800BleProvisioner().also { scanner = it }
                         p.provisionWifi(
-                            ssid = wifiSsid, password = wifiPass,
+                            ssid = ssid, password = password,
                             serverIp = serverIp, serverPort = serverPort.toIntOrNull() ?: 29010,
                             onDone = { success ->
                                 provisioning = false
@@ -398,80 +380,72 @@ fun AddDeviceScreen(onBack: () -> Unit, onBound: () -> Unit = {}) {
     }
 }
 
+/** Fases del mini-wizard de "Ajustes de Wi-Fi" (ver [WifiNetworkStep]). */
+private enum class WifiPhase { DETECTING, ASK_USE_CURRENT, PICK_NETWORK, MANUAL_ENTRY, PASSWORD }
+
 /**
- * "Ajustes de Wi-Fi" — pantalla real confirmada contra la app oficial
- * (Chaide_release 1.0.7) instalada en el equipo: aparece DESPUES de vincular,
- * con el SSID de la red actual del telefono ya puesto, pide password, y avisa
- * que el equipo solo acepta 2.4 GHz. "Continuar" manda la config por BLE
- * (WiFiConfigHelper.bleWiFiConfig real, ver M800BleProvisioner.provisionWifi).
+ * "Ajustes de Wi-Fi" — aparece DESPUES de vincular, antes de mandar la config
+ * por BLE. La app real autorellena el SSID con la red a la que el telefono ya
+ * esta conectado; aqui se hace explicito con un primer paso de confirmacion
+ * (pedido de negocio: no asumir la red actual sin preguntar), igual en Android
+ * e iOS:
+ *   1. Si se detecta una red actual -> se pregunta "¿usar esta red?".
+ *      - Sí -> solo falta la contraseña (el password nunca se puede leer del
+ *        sistema en ninguna plataforma).
+ *      - No -> Android abre el selector nativo de redes (panel de Ajustes);
+ *        iOS pide el nombre a mano (no tiene selector para apps de terceros).
+ *   2. Si no se detecta ninguna red (sin permiso, sin Wi-Fi, o iOS sin el
+ *      entitlement) se salta la pregunta y se va directo a esa misma rama.
+ * Avisa que el equipo solo acepta 2.4 GHz. "Continuar" manda la config por
+ * BLE (WiFiConfigHelper.bleWiFiConfig real, ver M800BleProvisioner.provisionWifi).
  */
 @Composable
-private fun WifiSettingsStep(
-    ssid: String,
-    onSsidChange: (String) -> Unit,
-    password: String,
-    onPasswordChange: (String) -> Unit,
+private fun WifiNetworkStep(
     provisioning: Boolean,
     failure: String?,
     hasLocationPerm: Boolean,
     onRequestLocation: () -> Unit,
-    onContinue: () -> Unit,
+    onContinue: (ssid: String, password: String) -> Unit,
 ) {
+    var phase by remember { mutableStateOf(WifiPhase.DETECTING) }
+    var detectedSsid by remember { mutableStateOf<String?>(null) }
+    var chosenSsid by remember { mutableStateOf("") }
+    var manualSsid by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
-    // iOS no permite leer el SSID sin entitlement especial: se escribe a mano.
-    var editingSsid by remember { mutableStateOf(platformName == "ios" && ssid.isBlank()) }
+    // true cuando volvemos del selector nativo de Android: si ahora hay una
+    // red conectada, el usuario ya la elegio a proposito -> no se le vuelve a
+    // preguntar "¿usar esta red?", se pasa directo a pedir la contraseña.
+    var cameFromPicker by remember { mutableStateOf(false) }
+
+    val launchPicker = rememberWifiPicker(onResult = { cameFromPicker = true; phase = WifiPhase.DETECTING })
+
+    // Se re-ejecuta cada vez que `phase` vuelve a DETECTING: carga inicial y
+    // cada regreso del selector nativo de Android.
+    LaunchedEffect(phase, hasLocationPerm) {
+        if (phase != WifiPhase.DETECTING) return@LaunchedEffect
+        val ssid = if (platformName == "android" && !hasLocationPerm) null else currentWifiSsid()
+        detectedSsid = ssid
+        phase = when {
+            !ssid.isNullOrBlank() && cameFromPicker -> { chosenSsid = ssid; WifiPhase.PASSWORD }
+            !ssid.isNullOrBlank() -> WifiPhase.ASK_USE_CURRENT
+            platformName == "android" -> WifiPhase.PICK_NETWORK
+            else -> WifiPhase.MANUAL_ENTRY
+        }
+    }
+
     val fieldColors = TextFieldDefaults.colors(
         focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent,
         focusedTextColor = TextHi, unfocusedTextColor = TextHi,
         focusedIndicatorColor = Mist, unfocusedIndicatorColor = Hairline,
         cursorColor = TextHi, focusedLabelColor = Mist, unfocusedLabelColor = Mist,
     )
-    // Mini-wizard: paso 1 detectar/confirmar red, paso 2 password+enviar.
-    // No deja avanzar sin red ni password, para no mandar config a medias al M800.
-    val canDetect = !hasLocationPerm && ssid.isBlank() && !editingSsid
-    val canContinue = ssid.isNotBlank() && password.isNotBlank() && !provisioning
 
-    Column(Modifier.fillMaxSize()) {
-        Spacer(Modifier.height(24.dp))
-        Text("Ajustes de Wi-Fi", color = TextHi, style = MaterialTheme.typography.headlineSmall)
-        Spacer(Modifier.height(6.dp))
-        Text(
-            "Paso 1 de 1: confirma la red y la contraseña para compartirlas con el equipo por Bluetooth.",
-            color = Mist, style = MaterialTheme.typography.bodySmall,
-        )
-        Spacer(Modifier.height(24.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Column {
-                Text("Wi-Fi conectado", color = Mist, style = MaterialTheme.typography.bodySmall)
-                Spacer(Modifier.height(4.dp))
-                if (editingSsid) {
-                    OutlinedTextField(
-                        value = ssid, onValueChange = onSsidChange, singleLine = true,
-                        colors = fieldColors,
-                    )
-                } else {
-                    Text(ssid.ifBlank { "—" }, color = TextHi, style = MaterialTheme.typography.titleMedium)
-                }
-            }
-            TextButton(onClick = { editingSsid = !editingSsid }) {
-                Text(if (editingSsid) "Listo" else "Cambiar a otra red Wi-Fi", color = TextHi, style = MaterialTheme.typography.bodySmall)
-            }
-        }
-        if (canDetect) {
-            Spacer(Modifier.height(8.dp))
-            OutlinedButton(onClick = onRequestLocation, modifier = Modifier.fillMaxWidth()) {
-                Text("Detectar mi red Wi-Fi actual", color = TextHi)
-            }
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "Android exige el permiso de ubicacion para leer el nombre de la red conectada.",
-                color = Faint, style = MaterialTheme.typography.bodySmall,
-            )
-        }
-        Spacer(Modifier.height(16.dp))
+    @Composable
+    fun PasswordField() {
         OutlinedTextField(
             value = password,
-            onValueChange = onPasswordChange,
+            onValueChange = { password = it },
             label = { Text("Contraseña") },
             singleLine = true,
             visualTransformation = if (showPassword) androidx.compose.ui.text.input.VisualTransformation.None
@@ -487,11 +461,19 @@ private fun WifiSettingsStep(
             colors = fieldColors,
             modifier = Modifier.fillMaxWidth(),
         )
-        Spacer(Modifier.height(16.dp))
-        Text(
-            "Este dispositivo solo es compatible con una red Wi-Fi de 2.4 GHz.",
-            color = Faint, style = MaterialTheme.typography.bodySmall,
-        )
+    }
+
+    @Composable
+    fun Header(subtitle: String) {
+        Spacer(Modifier.height(24.dp))
+        Text("Ajustes de Wi-Fi", color = TextHi, style = MaterialTheme.typography.headlineSmall)
+        Spacer(Modifier.height(6.dp))
+        Text(subtitle, color = Mist, style = MaterialTheme.typography.bodySmall)
+        Spacer(Modifier.height(24.dp))
+    }
+
+    @Composable
+    fun Footer(canContinue: Boolean, onClick: () -> Unit) {
         if (provisioning) {
             Spacer(Modifier.height(14.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -506,8 +488,8 @@ private fun WifiSettingsStep(
         }
         Spacer(Modifier.weight(1f))
         Button(
-            onClick = onContinue,
-            enabled = canContinue,
+            onClick = onClick,
+            enabled = canContinue && !provisioning,
             modifier = Modifier.fillMaxWidth().height(56.dp),
             shape = RoundedCornerShape(28.dp),
             colors = ButtonDefaults.buttonColors(
@@ -519,6 +501,103 @@ private fun WifiSettingsStep(
             else Text("Continuar", style = MaterialTheme.typography.labelLarge)
         }
         Spacer(Modifier.height(20.dp))
+    }
+
+    when (phase) {
+        WifiPhase.DETECTING -> Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+            CircularProgressIndicator(color = TextHi)
+        }
+
+        WifiPhase.ASK_USE_CURRENT -> Column(Modifier.fillMaxSize()) {
+            Header("Detectamos que tu teléfono está conectado a esta red Wi-Fi.")
+            Text("Red detectada", color = Mist, style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(4.dp))
+            Text(detectedSsid.orEmpty(), color = TextHi, style = MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.height(28.dp))
+            Text(
+                "¿Quieres compartir esta red con el equipo?",
+                color = Mist, style = MaterialTheme.typography.bodyMedium,
+            )
+            Spacer(Modifier.height(16.dp))
+            Button(
+                onClick = { chosenSsid = detectedSsid.orEmpty(); phase = WifiPhase.PASSWORD },
+                modifier = Modifier.fillMaxWidth().height(56.dp),
+                shape = RoundedCornerShape(28.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = BtnFill, contentColor = TextHi),
+            ) { Text("Sí, usar esta red", style = MaterialTheme.typography.labelLarge) }
+            Spacer(Modifier.height(10.dp))
+            OutlinedButton(
+                onClick = {
+                    cameFromPicker = false
+                    phase = if (platformName == "android") WifiPhase.PICK_NETWORK else WifiPhase.MANUAL_ENTRY
+                },
+                modifier = Modifier.fillMaxWidth().height(56.dp),
+                shape = RoundedCornerShape(28.dp),
+            ) { Text("No, elegir otra red", color = TextHi, style = MaterialTheme.typography.labelLarge) }
+            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.height(20.dp))
+        }
+
+        WifiPhase.PICK_NETWORK -> Column(Modifier.fillMaxSize()) {
+            Header("Elige la red Wi-Fi que quieres compartir con el equipo.")
+            if (!hasLocationPerm) {
+                Text(
+                    "Android exige el permiso de ubicación para detectar automáticamente la red conectada.",
+                    color = Faint, style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(onClick = onRequestLocation, modifier = Modifier.fillMaxWidth()) {
+                    Text("Conceder permiso de ubicación", color = TextHi)
+                }
+                Spacer(Modifier.height(16.dp))
+            }
+            Button(
+                onClick = launchPicker,
+                modifier = Modifier.fillMaxWidth().height(56.dp),
+                shape = RoundedCornerShape(28.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = BtnFill, contentColor = TextHi),
+            ) { Text("Elegir red Wi-Fi", style = MaterialTheme.typography.labelLarge) }
+            Spacer(Modifier.height(10.dp))
+            TextButton(onClick = { phase = WifiPhase.MANUAL_ENTRY }, modifier = Modifier.fillMaxWidth()) {
+                Text("Prefiero escribir el nombre de la red", color = Mist, style = MaterialTheme.typography.bodySmall)
+            }
+            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.height(20.dp))
+        }
+
+        WifiPhase.MANUAL_ENTRY -> Column(Modifier.fillMaxSize()) {
+            Header("Escribe el nombre y la contraseña de la red Wi-Fi del equipo.")
+            OutlinedTextField(
+                value = manualSsid, onValueChange = { manualSsid = it },
+                label = { Text("Nombre de la red (SSID)") }, singleLine = true,
+                colors = fieldColors, modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(16.dp))
+            PasswordField()
+            Spacer(Modifier.height(16.dp))
+            Text(
+                "Este dispositivo solo es compatible con una red Wi-Fi de 2.4 GHz.",
+                color = Faint, style = MaterialTheme.typography.bodySmall,
+            )
+            Footer(canContinue = manualSsid.isNotBlank() && password.isNotBlank()) {
+                onContinue(manualSsid.trim(), password)
+            }
+        }
+
+        WifiPhase.PASSWORD -> Column(Modifier.fillMaxSize()) {
+            Header("Confirma la contraseña para compartirla con el equipo por Bluetooth.")
+            Text("Wi-Fi conectado", color = Mist, style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(4.dp))
+            Text(chosenSsid, color = TextHi, style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(16.dp))
+            PasswordField()
+            Spacer(Modifier.height(16.dp))
+            Text(
+                "Este dispositivo solo es compatible con una red Wi-Fi de 2.4 GHz.",
+                color = Faint, style = MaterialTheme.typography.bodySmall,
+            )
+            Footer(canContinue = password.isNotBlank()) { onContinue(chosenSsid, password) }
+        }
     }
 }
 

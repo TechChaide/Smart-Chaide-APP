@@ -33,12 +33,29 @@ actual fun platformLog(tag: String, message: String) { Log.i(tag, message) }
 
 actual fun <T> runBlockingPlatform(block: suspend CoroutineScope.() -> T): T = runBlocking(block = block)
 
-actual fun currentWifiSsid(): String? = try {
+actual suspend fun currentWifiSsid(): String? = try {
     @Suppress("DEPRECATION")
     val wm = AndroidApp.context.getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
     @Suppress("DEPRECATION")
     wm?.connectionInfo?.ssid?.trim('"')?.takeIf { it.isNotBlank() && it != "<unknown ssid>" }
 } catch (_: Exception) { null }
+
+// Panel nativo de Ajustes > Wi-Fi (API 29+): deja al usuario elegir/conectar
+// una red sin salir de la app y sin que nosotros necesitemos escanear (el
+// escaneo activo esta muy restringido desde Android 9). Se devuelve RESULT_OK
+// si conecto algo y RESULT_CANCELED si no, pero igual re-chequeamos el SSID
+// nosotros mismos en vez de confiar en el result code.
+@Composable
+actual fun rememberWifiPicker(onResult: () -> Unit): () -> Unit {
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { onResult() }
+    return {
+        try {
+            launcher.launch(android.content.Intent(android.provider.Settings.Panel.ACTION_WIFI))
+        } catch (_: Exception) {
+            onResult()
+        }
+    }
+}
 
 // En Android 12+ el manifest declara BLUETOOTH_SCAN con `neverForLocation`, asi
 // que el escaneo BLE no requiere ubicacion. El componente Vue real

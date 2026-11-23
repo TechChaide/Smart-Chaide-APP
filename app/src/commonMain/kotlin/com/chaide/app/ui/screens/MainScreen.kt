@@ -4,14 +4,18 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -36,9 +40,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
+import com.chaide.app.i18n.LocalStrings
 import com.chaide.app.ui.MusicPlayerState
 import com.chaide.app.ui.theme.*
 
@@ -59,11 +65,12 @@ fun MainScreen(
     // rememberSaveable (no `remember`): al volver de una sub-pantalla
     // (Friends/Account/Configure) MainScreen se recompone desde cero y con
     // `remember` el tab saltaba a Home. La app real conserva el tab.
+    val strings = LocalStrings.current
     var selected by rememberSaveable { mutableIntStateOf(0) }
     val tabs = listOf(
-        Tab("Home", Icons.Filled.Home),
-        Tab("Device", Icons.Filled.GridView),
-        Tab("Me", Icons.Filled.Person),
+        Tab(strings.tabHome, Icons.Filled.Home),
+        Tab(strings.tabDevice, Icons.Filled.GridView),
+        Tab(strings.tabMe, Icons.Filled.Person),
     )
 
     val dockVisible = music.currentTrack != null
@@ -80,13 +87,30 @@ fun MainScreen(
         containerColor = Surface,
         bottomBar = {
             Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 14.dp, top = 6.dp)) {
-                if (dockVisible && !merged) {
-                    StackedPlayerDock(
-                        music = music,
-                        onPlayStarted = { merged = true },
-                        onWaveformDoubleTap = onOpenNowPlaying,
-                    )
-                    Spacer(Modifier.height(8.dp))
+                // Efecto "jelly" al minimizarse (estilo Dock de macOS): la
+                // píldora se encoge HACIA el nav bar (origen abajo-centro) con
+                // un spring rebotón, en vez de desaparecer en seco o con un
+                // tween lineal — la sensación de "ser absorbida" es lo que
+                // vende el minimizado, no solo que se achique.
+                AnimatedVisibility(
+                    visible = dockVisible && !merged,
+                    enter = fadeIn(tween(120)) + scaleIn(
+                        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+                        transformOrigin = TransformOrigin(0.5f, 1f),
+                    ),
+                    exit = fadeOut(tween(180)) + scaleOut(
+                        animationSpec = spring(dampingRatio = Spring.DampingRatioHighBouncy, stiffness = Spring.StiffnessMedium),
+                        transformOrigin = TransformOrigin(0.5f, 1f),
+                    ),
+                ) {
+                    Column {
+                        StackedPlayerDock(
+                            music = music,
+                            onPlayStarted = { merged = true },
+                            onWaveformDoubleTap = onOpenNowPlaying,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    }
                 }
                 GlassNavBarPill(
                     tabs, selected, { selected = it }, Modifier.fillMaxWidth(),
@@ -139,10 +163,21 @@ private fun GlassNavBarPill(
             }
         }
         if (trailingContent != null) {
+            // Mismo lenguaje "jelly" que StackedPlayerDock: el bulto entra
+            // con un leve rebote (overshoot) en vez de deslizarse liso, como
+            // si lo que se encogió afuera aterrizara aquí con elasticidad.
             AnimatedVisibility(
                 visible = true,
-                enter = expandHorizontally(expandFrom = Alignment.Start) + fadeIn(),
-                exit = shrinkHorizontally(shrinkTowards = Alignment.Start) + fadeOut(),
+                enter = fadeIn() + expandHorizontally(
+                    animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+                    expandFrom = Alignment.Start,
+                ) + scaleIn(
+                    animationSpec = spring(dampingRatio = Spring.DampingRatioHighBouncy, stiffness = Spring.StiffnessMedium),
+                    transformOrigin = TransformOrigin(0f, 0.5f),
+                ),
+                exit = fadeOut() + shrinkHorizontally(shrinkTowards = Alignment.Start) + scaleOut(
+                    transformOrigin = TransformOrigin(0f, 0.5f),
+                ),
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.width(1.dp).height(28.dp).background(Color.White.copy(alpha = 0.25f)))

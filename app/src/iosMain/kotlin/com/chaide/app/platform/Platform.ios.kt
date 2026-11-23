@@ -4,6 +4,9 @@ import androidx.compose.runtime.Composable
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
+import platform.NetworkExtension.NEHotspotNetwork
 import platform.AVFAudio.AVAudioSession
 import platform.AVFAudio.AVAudioSessionCategoryPlayback
 import platform.AVFAudio.setActive
@@ -33,10 +36,27 @@ actual fun platformLog(tag: String, message: String) {
 
 actual fun <T> runBlockingPlatform(block: suspend CoroutineScope.() -> T): T = runBlocking(block = block)
 
-// Leer el SSID en iOS exige el entitlement "Access WiFi Information" + permiso
-// de ubicacion, no disponible con un equipo de desarrollo personal. En iOS el
-// usuario escribe el nombre de la red en "Ajustes de Wi-Fi".
-actual fun currentWifiSsid(): String? = null
+// Con el entitlement "Access WiFi Information" (com.apple.developer.networking.wifi-info,
+// ver iosApp/iosApp.entitlements) NEHotspotNetwork.fetchCurrent devuelve el
+// SSID actual sin pedir permiso de ubicacion (asi es desde iOS 14). Sin el
+// entitlement (p.ej. un build firmado sin arrastrar ese archivo) siempre
+// devuelve null y el usuario escribe el nombre de la red a mano.
+actual suspend fun currentWifiSsid(): String? = suspendCancellableCoroutine { cont ->
+    try {
+        NEHotspotNetwork.fetchCurrentWithCompletionHandler { network ->
+            cont.resume(network?.SSID)
+        }
+    } catch (_: Throwable) {
+        cont.resume(null)
+    }
+}
+
+// iOS no tiene un selector nativo de redes cercanas para apps de terceros
+// (a diferencia del panel de Ajustes de Android) — por eso aqui no hace
+// nada util; la pantalla usa esto solo para saber que debe pedir el nombre
+// de la red a mano en vez de abrir un selector.
+@Composable
+actual fun rememberWifiPicker(onResult: () -> Unit): () -> Unit = { onResult() }
 
 // CoreBluetooth muestra el dialogo de permiso solo la primera vez que se usa
 // el radio (requiere NSBluetoothAlwaysUsageDescription en Info.plist).

@@ -20,8 +20,24 @@ expect fun platformLog(tag: String, message: String)
  */
 expect fun <T> runBlockingPlatform(block: suspend CoroutineScope.() -> T): T
 
-/** SSID de la red WiFi actual, o null si no se puede leer (iOS: se escribe a mano). */
-expect fun currentWifiSsid(): String?
+/**
+ * SSID de la red WiFi actual, o null si no se puede leer o el teléfono no
+ * está conectado a ninguna. Android: exige permiso de ubicación (ver
+ * [rememberWifiSsidPermission]). iOS: exige el entitlement "Access WiFi
+ * Information" (`iosApp/iosApp.entitlements`) — sin él, siempre null.
+ */
+expect suspend fun currentWifiSsid(): String?
+
+/**
+ * Abre el selector nativo de redes Wi-Fi del sistema para que el usuario
+ * elija una red distinta a la actual (Android: panel de Ajustes de Wi-Fi,
+ * `Settings.Panel.ACTION_WIFI`; iOS no tiene equivalente para apps de
+ * terceros, así que ahí se escribe el nombre a mano). [onResult] se llama al
+ * volver a la app sin importar si el usuario conectó algo o canceló — quien
+ * llama debe volver a comprobar [currentWifiSsid].
+ */
+@Composable
+expect fun rememberWifiPicker(onResult: () -> Unit): () -> Unit
 
 /** Estado de un permiso del sistema + forma de pedirlo. */
 class PermissionHandle(val granted: Boolean, val request: () -> Unit)

@@ -15,6 +15,7 @@ import org.jetbrains.compose.resources.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.chaide.app.i18n.LocalStrings
 import com.chaide.app.resources.Res
 import com.chaide.app.resources.ic_chaide_moon
 import com.chaide.app.resources.welcome_bg
@@ -25,6 +26,7 @@ import com.chaide.app.ui.theme.*
  * real de la luna (`iconos chaide/Chaide.svg`, provisto por el usuario). */
 @Composable
 fun WelcomeScreen(onLogin: () -> Unit, onSignUp: () -> Unit = {}) {
+    val strings = LocalStrings.current
     Box(Modifier.fillMaxSize()) {
         Image(
             painter = painterResource(Res.drawable.welcome_bg),
@@ -52,14 +54,14 @@ fun WelcomeScreen(onLogin: () -> Unit, onSignUp: () -> Unit = {}) {
                 modifier = Modifier.fillMaxWidth().height(56.dp),
                 shape = RoundedCornerShape(28.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14437E), contentColor = Color.White)
-            ) { Text("Sign Up", style = MaterialTheme.typography.labelLarge) }
+            ) { Text(strings.signUp, style = MaterialTheme.typography.labelLarge) }
 
             Button(
                 onClick = onLogin,
                 modifier = Modifier.fillMaxWidth().height(56.dp),
                 shape = RoundedCornerShape(28.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF9AA7B8), contentColor = Color(0xFF13305C))
-            ) { Text("Log in", style = MaterialTheme.typography.labelLarge) }
+            ) { Text(strings.logIn, style = MaterialTheme.typography.labelLarge) }
         }
     }
 }

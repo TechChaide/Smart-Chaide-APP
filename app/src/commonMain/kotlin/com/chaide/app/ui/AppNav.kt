@@ -118,7 +118,7 @@ fun AppNav() {
             )
         }
         composable("live") {
-            LiveMonitorScreen(onBack = { nav.popBackStack() })
+            LiveMonitorScreen(onBack = { nav.popBackStack() }, uploadScope = scope)
         }
     }
 }

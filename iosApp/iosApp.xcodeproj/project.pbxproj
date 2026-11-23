@@ -296,6 +296,7 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = C0DE00000000000000000013 /* Config.xcconfig */;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = iosApp/iosApp.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "$(TEAM_ID)";
@@ -327,6 +328,7 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = C0DE00000000000000000013 /* Config.xcconfig */;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = iosApp/iosApp.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "$(TEAM_ID)";

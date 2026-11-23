@@ -17,6 +17,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import com.chaide.app.i18n.LocalStrings
 import com.chaide.app.net.Api
 import com.chaide.app.net.LoginRequest
 import com.chaide.app.net.Session
@@ -30,6 +31,7 @@ import kotlinx.coroutines.withContext
  * azul plano, campos subrayados (sin caja), checkbox de términos obligatorio. */
 @Composable
 fun LoginScreen(onBack: () -> Unit, onSuccess: () -> Unit) {
+    val strings = LocalStrings.current
     var email by remember { mutableStateOf("crisandrade94.ca@gmail.com") }
     var password by remember { mutableStateOf("") }
     var showPass by remember { mutableStateOf(false) }
@@ -50,18 +52,18 @@ fun LoginScreen(onBack: () -> Unit, onSuccess: () -> Unit) {
         Row(Modifier.fillMaxWidth().padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = TextHi) }
             Spacer(Modifier.weight(1f))
-            Text("Forgot Password?", color = Mist, style = MaterialTheme.typography.bodyLarge,
+            Text(strings.forgotPassword, color = Mist, style = MaterialTheme.typography.bodyLarge,
                 modifier = Modifier.padding(end = 8.dp))
         }
         Spacer(Modifier.height(18.dp))
-        Text("Log in", style = MaterialTheme.typography.headlineLarge, color = TextHi)
+        Text(strings.logIn, style = MaterialTheme.typography.headlineLarge, color = TextHi)
         Spacer(Modifier.height(36.dp))
 
-        TextField(email, { email = it; error = null }, label = { Text("Email") },
+        TextField(email, { email = it; error = null }, label = { Text(strings.email) },
             singleLine = true, colors = fieldColors, modifier = Modifier.fillMaxWidth(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email))
         Spacer(Modifier.height(28.dp))
-        TextField(password, { password = it; error = null }, label = { Text("Password") },
+        TextField(password, { password = it; error = null }, label = { Text(strings.password) },
             singleLine = true, colors = fieldColors, modifier = Modifier.fillMaxWidth(),
             visualTransformation = if (showPass) VisualTransformation.None else PasswordVisualTransformation(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
@@ -71,13 +73,13 @@ fun LoginScreen(onBack: () -> Unit, onSuccess: () -> Unit) {
                 }
             })
         Spacer(Modifier.height(10.dp))
-        Text("Use 6-16 characters (letters numbers symbols)", color = TextHi, style = MaterialTheme.typography.bodyMedium)
+        Text(strings.passwordHint, color = TextHi, style = MaterialTheme.typography.bodyMedium)
         Spacer(Modifier.height(14.dp))
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { acceptedTerms = !acceptedTerms }) {
             Checkbox(checked = acceptedTerms, onCheckedChange = { acceptedTerms = it },
                 colors = CheckboxDefaults.colors(checkedColor = Mist, uncheckedColor = Mist, checkmarkColor = Night))
-            Text("Accept ChaideSmart ", color = Mist, style = MaterialTheme.typography.bodyMedium)
-            Text("License Agreement", color = TextHi, style = MaterialTheme.typography.bodyMedium,
+            Text(strings.acceptPrefix, color = Mist, style = MaterialTheme.typography.bodyMedium)
+            Text(strings.licenseAgreement, color = TextHi, style = MaterialTheme.typography.bodyMedium,
                 textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline)
         }
 
@@ -93,8 +95,8 @@ fun LoginScreen(onBack: () -> Unit, onSuccess: () -> Unit) {
                     try {
                         val r = withContext(Dispatchers.IO) { Api.service.login(LoginRequest(email.trim(), password)) }
                         if (r.token != null) { Session.token = r.token; Session.user = r.user; onSuccess() }
-                        else error = r.message ?: "Could not log in"
-                    } catch (e: Exception) { error = "No connection to server" }
+                        else error = r.message ?: strings.loginError
+                    } catch (e: Exception) { error = strings.noConnection }
                     finally { loading = false }
                 }
             },
@@ -105,7 +107,7 @@ fun LoginScreen(onBack: () -> Unit, onSuccess: () -> Unit) {
                 disabledContainerColor = Night2, disabledContentColor = Faint)
         ) {
             if (loading) CircularProgressIndicator(color = TextHi, modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
-            else Text("Log in", style = MaterialTheme.typography.labelLarge)
+            else Text(strings.logIn, style = MaterialTheme.typography.labelLarge)
         }
     }
 }

@@ -243,6 +243,25 @@ data class MusicTrackDto(val id: Int? = null, val name: String? = null, val dura
 @Serializable
 data class MusicResponse(val data: List<MusicTrackDto>? = null)
 
+/**
+ * Sesión de monitoreo en vivo recién terminada (ver LiveMonitorScreen.kt,
+ * que junta estas listas mientras la pantalla está abierta). [intervalSec]
+ * es el paso real entre muestras — hoy el gateway se consulta cada 1000ms,
+ * pero el backend guarda/lee en pasos de 60s (igual que `history_detail_NN`
+ * real), así que Kotlin debe mandar ya reducido a ese paso, no cada muestra
+ * cruda del polling.
+ */
+@Serializable
+data class UploadSleepSessionRequest(
+    val startTime: Long, val intervalSec: Int = 60,
+    val heartRate: List<Int>, val breathRate: List<Int>,
+    val eTemp: List<Int>, val eHumidity: List<Int>,
+)
+@Serializable
+data class UploadSleepSessionResponse(val data: UploadSleepSessionResult? = null, val message: String? = null)
+@Serializable
+data class UploadSleepSessionResult(val startTime: Long? = null, val durationMin: Int? = null, val samples: Int? = null)
+
 // ---------- API ----------
 private suspend inline fun <reified T> HttpResponse.unwrap(): T {
     if (!status.isSuccess()) throw ApiException(status.value, bodyAsText())
@@ -268,6 +287,8 @@ class ChaideApi internal constructor(private val http: HttpClient) {
         http.get("sleep/report/day") { auth(); parameter("before", before); parameter("after", after) }.unwrap()
     suspend fun sleepReportTrend(period: String, offset: Int): TrendResponse =
         http.get("sleep/report/trend") { auth(); parameter("period", period); parameter("offset", offset) }.unwrap()
+    suspend fun uploadSleepSession(body: UploadSleepSessionRequest): UploadSleepSessionResponse =
+        http.post("sleep/report") { auth(); jsonBody(body) }.unwrap()
     suspend fun sleepTips(lang: String): SleepTipsResponse = http.get("content/sleeptips") { auth(); parameter("lang", lang) }.unwrap()
     suspend fun music(): MusicResponse = http.get("content/music") { auth() }.unwrap()
 }
