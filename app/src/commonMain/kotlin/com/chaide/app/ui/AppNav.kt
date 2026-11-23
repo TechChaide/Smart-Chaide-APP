@@ -2,6 +2,7 @@ package com.chaide.app.ui
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.navigation.compose.NavHost
@@ -36,6 +37,18 @@ fun AppNav() {
     val scope = rememberCoroutineScope()
     val music = remember { MusicPlayerState(scope) }
     DisposableEffect(Unit) { onDispose { music.release() } }
+
+    // Sesion perdida estando dentro de la app (JWT vencido / 401 del backend,
+    // ver Session.onUnauthorized): volver a Welcome en vez de dejar
+    // Home "logueado" con todas las llamadas fallando en silencio.
+    LaunchedEffect(Session.loggedIn) {
+        if (Session.loggedIn) return@LaunchedEffect
+        val route = nav.currentDestination?.route ?: return@LaunchedEffect
+        if (route in setOf("welcome", "login", "signup")) return@LaunchedEffect
+        if (music.isPlaying) music.togglePlayPause()
+        nav.navigate("welcome") { popUpTo(nav.graph.id) { inclusive = true } }
+    }
+
     NavHost(navController = nav, startDestination = startDestination) {
         composable("welcome") {
             WelcomeScreen(
@@ -80,7 +93,11 @@ fun AppNav() {
             MusicLibraryScreen(music = music, onBack = { nav.popBackStack() })
         }
         composable("nowplaying") {
-            NowPlayingScreen(music = music, onBack = { nav.popBackStack() })
+            NowPlayingScreen(
+                music = music,
+                onBack = { nav.popBackStack() },
+                onOpenLibrary = { nav.navigate("music") },
+            )
         }
         composable(
             "report/{period}",
@@ -97,7 +114,10 @@ fun AppNav() {
         composable("account") {
             UserAccountScreen(
                 onBack = { nav.popBackStack() },
-                onLoggedOut = { nav.navigate("welcome") { popUpTo("main") { inclusive = true } } },
+                onLoggedOut = {
+                    if (music.isPlaying) music.togglePlayPause()
+                    nav.navigate("welcome") { popUpTo(nav.graph.id) { inclusive = true } }
+                },
             )
         }
         composable("settings") {

@@ -51,6 +51,8 @@ val Night3   = BrandTint
 val NavBar   = Surface
 val Moon     = Color.White
 val BtnFill  = Color.White
+/** Texto/indicadores SOBRE BtnFill: antes se usaba TextHi (blanco) -> botones blancos sin texto visible. */
+val BtnText  = Surface
 val TextHi   = Ink
 val Mist     = InkMute
 val Faint    = InkFaint

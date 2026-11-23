@@ -28,7 +28,7 @@ import com.chaide.app.ui.theme.*
  *   - `notification`    -> "Notification"      (push a /notification)
  *   - `license`         -> "License Agreement" (push a /license)
  *   - `cur_app_version` -> "Current Version: V{value}"
- *   - `check_update` / `newest_version` -> "Version Updates" / "Lastest Version"
+ *   - `check_update` / `newest_version` -> "Version Updates" / "Latest Version"
  */
 @Composable
 fun SettingsScreen(onBack: () -> Unit) {

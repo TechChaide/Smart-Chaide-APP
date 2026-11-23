@@ -24,6 +24,15 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
+import kotlinx.datetime.Clock
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import kotlin.io.encoding.Base64
+import kotlin.io.encoding.ExperimentalEncodingApi
 
 /** Motor HTTP de cada plataforma: OkHttp en Android, Darwin (NSURLSession) en iOS. */
 internal expect fun createHttpClient(config: io.ktor.client.HttpClientConfig<*>.() -> Unit): HttpClient
@@ -58,17 +67,34 @@ object Session {
     private val prefs: Settings by lazy { Settings() }
 
     var token: String? = null
-        set(value) { field = value; persist() }
+        set(value) { field = value; loggedIn = value != null; persist() }
     var user: UserDto? = null
         set(value) { field = value; persist() }
     val isLoggedIn get() = token != null
 
+    /**
+     * Estado observable por Compose: AppNav lo vigila y, si pasa a false
+     * estando dentro de la app (token vencido / 401), vuelve a Login.
+     */
+    var loggedIn by mutableStateOf(false)
+        private set
+
+    // Mientras se restaura desde disco no se persiste: antes, asignar `token`
+    // guardaba con `user` todavia en null y BORRABA el usuario guardado.
+    private var restoring = false
+
     /** Llamar una vez al arrancar (MainActivity / MainViewController). */
     fun init() {
-        token = prefs.getStringOrNull(KEY_TOKEN)
-        user = prefs.getStringOrNull(KEY_USER)?.let {
+        restoring = true
+        val savedToken = prefs.getStringOrNull(KEY_TOKEN)
+        val savedUser = prefs.getStringOrNull(KEY_USER)?.let {
             try { ApiJson.decodeFromString(UserDto.serializer(), it) } catch (_: Exception) { null }
         }
+        token = savedToken
+        user = savedUser
+        restoring = false
+        // JWT vencido: no entrar a Home con una sesion que el backend ya rechaza.
+        if (savedToken != null && isJwtExpired(savedToken)) clear()
     }
 
     fun clear() {
@@ -76,11 +102,26 @@ object Session {
         user = null
     }
 
+    /** El backend respondio 401 a una llamada autenticada: la sesion ya no sirve. */
+    fun onUnauthorized() {
+        if (token != null) clear()
+    }
+
     private fun persist() {
+        if (restoring) return
         token?.let { prefs.putString(KEY_TOKEN, it) } ?: prefs.remove(KEY_TOKEN)
         user?.let { prefs.putString(KEY_USER, ApiJson.encodeToString(UserDto.serializer(), it)) } ?: prefs.remove(KEY_USER)
     }
 }
+
+/** true si el JWT trae `exp` y ya paso (con 60 s de margen). Sin `exp` -> no vencido. */
+@OptIn(ExperimentalEncodingApi::class)
+internal fun isJwtExpired(jwt: String): Boolean = try {
+    val payload = jwt.split('.').getOrNull(1) ?: return false
+    val json = Base64.UrlSafe.withPadding(Base64.PaddingOption.ABSENT_OPTIONAL).decode(payload).decodeToString()
+    val exp = ApiJson.parseToJsonElement(json).jsonObject["exp"]?.jsonPrimitive?.longOrNull
+    exp != null && Clock.System.now().epochSeconds >= exp - 60
+} catch (_: Exception) { false }
 
 /**
  * IP/puerto del m800-gateway de pruebas, persistidos: la IP cambia cada vez
@@ -94,11 +135,18 @@ object GatewaySettings {
 
     // IP de la PC que corre el gateway en la LAN de pruebas (ver README,
     // "topologia hibrida"). Si un telefono ya tiene un valor guardado, este
-    // default NO lo pisa: hay que retipearlo en "Add Device" o borrar datos.
-    var ip: String = "192.168.206.89"
+    // default NO lo pisa: se cambia en "Add Device" -> "Server IP" (se
+    // guarda al escribir una IPv4 valida).
+    var ip: String = "192.168.205.95"
         set(value) { field = value; prefs.putString(KEY_IP, value) }
     var httpPort: Int = 29012
         set(value) { field = value; prefs.putInt(KEY_HTTP_PORT, value) }
+
+    /** Valida "a.b.c.d" con cada parte en 0..255. */
+    fun isValidIp(value: String): Boolean {
+        val parts = value.trim().split('.')
+        return parts.size == 4 && parts.all { p -> p.isNotEmpty() && p.length <= 3 && p.all { it.isDigit() } && p.toInt() in 0..255 }
+    }
 
     fun init() {
         prefs.getStringOrNull(KEY_IP)?.let { ip = it }
@@ -264,7 +312,11 @@ data class UploadSleepSessionResult(val startTime: Long? = null, val durationMin
 
 // ---------- API ----------
 private suspend inline fun <reified T> HttpResponse.unwrap(): T {
-    if (!status.isSuccess()) throw ApiException(status.value, bodyAsText())
+    if (!status.isSuccess()) {
+        // 401 en una llamada que llevaba token = sesion vencida o revocada.
+        if (status.value == 401 && call.request.headers["Authorization"] != null) Session.onUnauthorized()
+        throw ApiException(status.value, bodyAsText())
+    }
     return body()
 }
 

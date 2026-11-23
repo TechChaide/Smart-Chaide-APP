@@ -115,10 +115,10 @@ fun SignUpScreen(onBack: () -> Unit, onSuccess: () -> Unit) {
             enabled = canSubmit,
             modifier = Modifier.fillMaxWidth().height(56.dp),
             shape = androidx.compose.foundation.shape.RoundedCornerShape(28.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = BtnFill, contentColor = TextHi,
+            colors = ButtonDefaults.buttonColors(containerColor = BtnFill, contentColor = BtnText,
                 disabledContainerColor = Night2, disabledContentColor = Faint)
         ) {
-            if (loading) CircularProgressIndicator(color = TextHi, modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+            if (loading) CircularProgressIndicator(color = BtnText, modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
             else Text(strings.signUp, style = MaterialTheme.typography.labelLarge)
         }
     }

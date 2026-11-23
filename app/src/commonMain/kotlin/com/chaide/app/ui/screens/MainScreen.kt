@@ -256,7 +256,7 @@ private fun PlayerButtons(
         modifier = Modifier.size(28.dp),
     ) {
         Icon(
-            if (music.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, "Play",
+            if (music.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, if (music.isPlaying) "Pause" else "Play",
             tint = Color.White, modifier = Modifier.size(20.dp),
         )
     }

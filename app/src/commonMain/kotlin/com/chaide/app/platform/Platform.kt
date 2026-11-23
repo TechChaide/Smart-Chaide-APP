@@ -29,15 +29,24 @@ expect fun <T> runBlockingPlatform(block: suspend CoroutineScope.() -> T): T
 expect suspend fun currentWifiSsid(): String?
 
 /**
- * Abre el selector nativo de redes Wi-Fi del sistema para que el usuario
- * elija una red distinta a la actual (Android: panel de Ajustes de Wi-Fi,
- * `Settings.Panel.ACTION_WIFI`; iOS no tiene equivalente para apps de
- * terceros, así que ahí se escribe el nombre a mano). [onResult] se llama al
- * volver a la app sin importar si el usuario conectó algo o canceló — quien
- * llama debe volver a comprobar [currentWifiSsid].
+ * Red WiFi visible para el telefono (agrupada por SSID: la de mejor senal).
+ * El M800 solo funciona en 2,4 GHz: [has24GHz] = false -> no se puede elegir.
  */
-@Composable
-expect fun rememberWifiPicker(onResult: () -> Unit): () -> Unit
+data class WifiNetwork(
+    val ssid: String,
+    val rssi: Int,
+    val has24GHz: Boolean,
+    val has5GHz: Boolean,
+    val secured: Boolean,
+)
+
+/**
+ * Redes WiFi cercanas, ordenadas por senal. Devuelve null si la plataforma no
+ * permite listarlas: iOS solo lo autoriza con un entitlement especial de Apple
+ * (NEHotspotHelper) -> en iOS el usuario escribe el nombre de la red.
+ * En Android requiere el permiso de ubicacion y la ubicacion del telefono activa.
+ */
+expect suspend fun scanWifiNetworks(): List<WifiNetwork>?
 
 /** Estado de un permiso del sistema + forma de pedirlo. */
 class PermissionHandle(val granted: Boolean, val request: () -> Unit)
@@ -49,7 +58,7 @@ class PermissionHandle(val granted: Boolean, val request: () -> Unit)
 @Composable
 expect fun rememberBlePermission(): PermissionHandle
 
-/** Permiso para leer el SSID actual (Android: ubicacion). iOS: no aplica. */
+/** Permiso para leer el SSID actual y listar redes WiFi (Android: ubicacion). iOS: no aplica. */
 @Composable
 expect fun rememberWifiSsidPermission(): PermissionHandle
 

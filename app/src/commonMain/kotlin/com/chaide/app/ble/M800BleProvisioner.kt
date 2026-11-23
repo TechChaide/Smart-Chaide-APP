@@ -64,6 +64,10 @@ class M800BleProvisioner {
     private var pendingSeq: Byte = 0
 
     private var onStep: ((Step) -> Unit)? = null
+
+    /** Ultimo M800 visto en un escaneo: provisionWifi lo reutiliza en vez de
+     *  reescanear (el M800 anuncia en rafagas y un reescaneo corto lo perdia). */
+    private var lastFound: Found? = null
     private var foundDeviceId: String? = null
 
     // ---- Modo diagnóstico: conectar y volcar EXACTAMENTE lo que responde el
@@ -84,6 +88,82 @@ class M800BleProvisioner {
     }.joinToString("")
 
     /**
+     * Un equipo Bluetooth visto cerca (para la lista de seleccion del alta).
+     * - [address]: MAC real en Android; en iOS el identificador que asigna el
+     *   sistema (CoreBluetooth no expone la MAC).
+     * - [isM800]: solo estos se pueden seleccionar.
+     * - [serial]: serial real del M800 si vino en el anuncio (AD 0xFF); si no,
+     *   se resuelve al conectar (identifyDevice).
+     */
+    data class Nearby(
+        val name: String?,
+        val address: String,
+        val rssi: Int,
+        val isM800: Boolean,
+        val serial: String?,
+    )
+
+    /**
+     * Escaneo para la seleccion manual: reporta EN VIVO (onUpdate) los equipos
+     * Bluetooth cercanos con nombre, mas todos los M800. Los M800 van primero.
+     * [onDone] al vencer [timeoutMs] o al llamar [stopNearbyScan].
+     */
+    fun scanNearby(
+        timeoutMs: Long = 45_000,
+        onUpdate: (devices: List<Nearby>, hiddenUnnamed: Int) -> Unit,
+        onDone: (devices: List<Nearby>, hiddenUnnamed: Int) -> Unit,
+    ) {
+        val seen = LinkedHashMap<String, Nearby>()
+        val unnamed = HashSet<String>()
+        if (!bleTransport.isBluetoothOpen()) { onDone(emptyList(), 0); return }
+        nearbyDone = false
+        fun sorted() = seen.values.sortedWith(compareByDescending<Nearby> { it.isM800 }.thenByDescending { it.rssi })
+
+        bleTransport.setListener(object : BleTransportListener {
+            override fun onScanResult(result: BleScanResult) {
+                val name = (M800Protocol.parseLocalName(result.rawRecord) ?: result.name)?.trim()?.takeIf { it.isNotEmpty() }
+                if (name == null) {
+                    if (unnamed.add(result.address)) onUpdate(sorted(), unnamed.size)
+                    return
+                }
+                val isM800 = M800Protocol.DEVICE_NAME_REGEX.matches(name)
+                val serial = if (isM800) M800Protocol.parseSerial(result.rawRecord) else null
+                val prev = seen[result.address]
+                val next = Nearby(name, result.address, result.rssi, isM800, serial ?: prev?.serial)
+                seen[result.address] = next
+                unnamed.remove(result.address)
+                // Solo se refresca la UI cuando cambia algo visible (nuevo equipo o serial).
+                if (prev == null || (prev.serial == null && next.serial != null)) {
+                    if (isM800) platformLog("M800Scan", "M800 cerca: $name serial=${next.serial} addr=${result.address} rssi=${result.rssi}")
+                    onUpdate(sorted(), unnamed.size)
+                }
+            }
+        })
+        bleTransport.scan(timeoutMs.toInt())
+        nearbyFinish = { if (!nearbyDone) { nearbyDone = true; bleTransport.stopScan(); onDone(sorted(), unnamed.size) } }
+        @OptIn(DelicateCoroutinesApi::class)
+        GlobalScope.launch(Dispatchers.Main) {
+            delay(timeoutMs)
+            nearbyFinish?.invoke()
+        }
+    }
+
+    private var nearbyDone = true
+    private var nearbyFinish: (() -> Unit)? = null
+
+    /** Corta el escaneo de [scanNearby] antes de tiempo (p.ej. al elegir un equipo). */
+    fun stopNearbyScan() { nearbyFinish?.invoke() }
+
+    /** Fija el M800 elegido por el usuario: lo usaran identifyDevice y provisionWifi. */
+    fun select(device: Nearby) {
+        lastFound = Found(device.name ?: device.address, device.serial, device.address, device.rssi)
+        identifyTarget = device.address
+    }
+
+    /** Si se eligio un equipo, identifyDevice solo se conecta a esa direccion. */
+    private var identifyTarget: String? = null
+
+    /**
      * Escaneo puro, sin aprovisionar: acumula los M800 vistos durante
      * `timeoutMs` deduplicando por deviceName y entrega la lista al terminar.
      */
@@ -100,6 +180,7 @@ class M800BleProvisioner {
                 if (!M800Protocol.DEVICE_NAME_REGEX.matches(name)) return
                 // El serial completo viaja en los datos de fabricante (AD 0xFF).
                 val serial = M800Protocol.parseSerial(result.rawRecord)
+                lastFound = seen[name] ?: Found(name, serial, result.address, result.rssi)
                 if (!seen.containsKey(name)) {
                     platformLog("M800Scan", "encontrado $name serial=$serial mac=${result.address} rssi=${result.rssi}")
                     seen[name] = Found(name, serial, result.address, result.rssi)
@@ -129,16 +210,14 @@ class M800BleProvisioner {
         onLine: (String) -> Unit = {},
         onDone: (Boolean) -> Unit = {},
     ) {
-        onLine("— aprovisionando WiFi+servidor por BLE (oficial) —")
-        onLine("escaneando…")
-        scanForDevices(timeoutMs = 10_000) { found ->
-            val target = found.firstOrNull()
-            if (target == null) {
-                onLine("no se encontró ningún M800 cerca")
-                onDone(false)
-                return@scanForDevices
-            }
-            onLine("encontrado ${target.deviceName} (${target.macAddr}); mandando config…")
+        // Todo queda tambien en el log de la plataforma (antes el resultado solo
+        // iba a la UI y no habia forma de diagnosticar un fallo).
+        val log: (String) -> Unit = { platformLog("M800Prov", it); onLine(it) }
+        var finished = false
+        val finish: (Boolean) -> Unit = { ok -> if (!finished) { finished = true; onDone(ok) } }
+
+        fun send(target: Found) {
+            log("enviando WiFi a ${target.deviceName} (${target.macAddr}) ssid=$ssid server=$serverIp:$serverPort")
             val helper = WiFiConfigHelper.getInstance(bleTransport)
             helper.bleWiFiConfig(
                 M800Protocol.DEVICE_TYPE_M800,
@@ -148,11 +227,39 @@ class M800BleProvisioner {
                 ssid.encodeToByteArray(),
                 password,
                 IResultCallback { cd ->
-                    onLine("resultado: status=${cd.status} success=${cd.isSuccess}")
-                    onLine("result obj: ${cd.result}")
-                    onDone(cd.isSuccess)
+                    log("resultado WiFi: status=${cd.status} success=${cd.isSuccess} result=${cd.result}")
+                    finish(cd.isSuccess)
                 },
             )
+            // Nunca quedarse colgado: si el SDK no responde en 90 s, se da por fallido.
+            @OptIn(DelicateCoroutinesApi::class)
+            GlobalScope.launch(Dispatchers.Main) {
+                delay(90_000)
+                if (!finished) {
+                    log("sin respuesta del equipo en 90 s: se cancela")
+                    bleTransport.stopScan()
+                    bleTransport.disconnect()
+                    finish(false)
+                }
+            }
+        }
+
+        log("— aprovisionando WiFi+servidor por BLE (oficial) —")
+        val known = lastFound
+        if (known != null) {
+            send(known)
+            return
+        }
+        log("escaneando…")
+        // Mismo tiempo que el alta (45 s): el M800 anuncia en rafagas intermitentes.
+        scanForDevices(timeoutMs = 45_000) { found ->
+            val target = found.firstOrNull()
+            if (target == null) {
+                log("no se encontró ningún M800 cerca")
+                finish(false)
+                return@scanForDevices
+            }
+            send(target)
         }
     }
 
@@ -355,6 +462,8 @@ class M800BleProvisioner {
             platformLog("M800Scan", "seen name=${name ?: "<null>"} mac=${result.address} rssi=${result.rssi}")
             if (name == null) return
             if (!M800Protocol.DEVICE_NAME_REGEX.matches(name)) return
+            // Equipo elegido por el usuario: no conectarse a otro M800 cercano.
+            identifyTarget?.let { if (result.address != it) return }
             platformLog("M800Scan", "MATCH -> $name mac=${result.address} rssi=${result.rssi}")
             // Volcado completo del advertisement: la MAC WiFi del sensor suele
             // venir en los datos de fabricante (AD type 0xFF) y no coincide con

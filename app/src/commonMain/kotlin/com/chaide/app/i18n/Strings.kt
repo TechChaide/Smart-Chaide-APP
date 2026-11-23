@@ -26,8 +26,10 @@ interface AppStrings {
     val acceptPrefix: String
     val licenseAgreement: String
     val loginError: String
+    val loginErrorCredentials: String
     val signUpError: String
     val noConnection: String
+    fun serverError(status: Int): String
 
     // Pestañas de MainScreen
     val tabHome: String
@@ -57,8 +59,10 @@ object EsStrings : AppStrings {
     override val acceptPrefix = "Acepto ChaideSmart "
     override val licenseAgreement = "Acuerdo de Licencia"
     override val loginError = "No se pudo iniciar sesión"
+    override val loginErrorCredentials = "Correo o contraseña incorrectos"
     override val signUpError = "No se pudo crear la cuenta"
     override val noConnection = "Sin conexión con el servidor"
+    override fun serverError(status: Int) = "Error del servidor ($status). Intenta más tarde."
     override val tabHome = "Inicio"
     override val tabDevice = "Dispositivo"
     override val tabMe = "Yo"
@@ -84,8 +88,10 @@ object EnStrings : AppStrings {
     override val acceptPrefix = "Accept ChaideSmart "
     override val licenseAgreement = "License Agreement"
     override val loginError = "Could not log in"
+    override val loginErrorCredentials = "Incorrect email or password"
     override val signUpError = "Could not create the account"
     override val noConnection = "No connection to server"
+    override fun serverError(status: Int) = "Server error ($status). Try again later."
     override val tabHome = "Home"
     override val tabDevice = "Device"
     override val tabMe = "Me"
@@ -93,7 +99,7 @@ object EnStrings : AppStrings {
     override val unit = "Unit"
     override val notification = "Notification"
     override val versionUpdates = "Version Updates"
-    override val lastestVersion = "Lastest Version"
+    override val lastestVersion = "Latest Version"
     override fun currentVersion(version: String) = "Current Version: V$version"
     override val language = "Language"
     override val languageSpanish = "Spanish"

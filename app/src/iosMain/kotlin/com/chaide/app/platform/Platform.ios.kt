@@ -30,8 +30,12 @@ import platform.darwin.NSObjectProtocol
 
 actual val platformName: String = "ios"
 
+// NUNCA pasar String de Kotlin como argumento variadico a NSLog ("%@"/"%s"):
+// en Kotlin/Native no llega como objeto ObjC y la app se cierra (crash
+// EXC_BREAKPOINT en el primer log del escaneo BLE). Se arma el texto en Kotlin
+// y se pasa como formato unico, escapando los '%'.
 actual fun platformLog(tag: String, message: String) {
-    NSLog("[%@] %@", tag, message)
+    NSLog("[$tag] $message".replace("%", "%%"))
 }
 
 actual fun <T> runBlockingPlatform(block: suspend CoroutineScope.() -> T): T = runBlocking(block = block)
@@ -51,12 +55,9 @@ actual suspend fun currentWifiSsid(): String? = suspendCancellableCoroutine { co
     }
 }
 
-// iOS no tiene un selector nativo de redes cercanas para apps de terceros
-// (a diferencia del panel de Ajustes de Android) — por eso aqui no hace
-// nada util; la pantalla usa esto solo para saber que debe pedir el nombre
-// de la red a mano en vez de abrir un selector.
-@Composable
-actual fun rememberWifiPicker(onResult: () -> Unit): () -> Unit = { onResult() }
+// iOS no permite listar redes WiFi (requiere el entitlement NEHotspotHelper,
+// que Apple solo concede a apps de gestion de hotspots): la UI pide escribirla.
+actual suspend fun scanWifiNetworks(): List<WifiNetwork>? = null
 
 // CoreBluetooth muestra el dialogo de permiso solo la primera vez que se usa
 // el radio (requiere NSBluetoothAlwaysUsageDescription en Info.plist).

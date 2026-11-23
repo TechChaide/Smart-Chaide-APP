@@ -7,7 +7,10 @@ import androidx.compose.runtime.setValue
 import com.chaide.app.net.Api
 import com.chaide.app.net.MusicTrackDto
 import com.chaide.app.platform.AudioPlayer
+import com.russhwolf.settings.Settings
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.launch
@@ -35,6 +38,34 @@ class MusicPlayerState(private val scope: CoroutineScope) {
         private set
     var positionMs by mutableIntStateOf(0)
         private set
+
+    // Favoritos: ids de pista, persistidos en el telefono.
+    private val prefs: Settings by lazy { Settings() }
+    var favorites by mutableStateOf(
+        prefs.getStringOrNull(KEY_FAVORITES)?.split(',')?.mapNotNull { it.toIntOrNull() }?.toSet() ?: emptySet()
+    )
+        private set
+    fun isFavorite(track: MusicTrackDto?) = track?.id != null && track.id in favorites
+    fun toggleFavorite(track: MusicTrackDto?) {
+        val id = track?.id ?: return
+        favorites = if (id in favorites) favorites - id else favorites + id
+        prefs.putString(KEY_FAVORITES, favorites.joinToString(","))
+    }
+
+    // Temporizador de sueno: pausa la musica al vencer. Ciclo apagado -> 15 -> 30 -> 60 min.
+    var sleepTimerMin by mutableIntStateOf(0)
+        private set
+    private var sleepTimerJob: Job? = null
+    fun cycleSleepTimer() {
+        val next = when (sleepTimerMin) { 0 -> 15; 15 -> 30; 30 -> 60; else -> 0 }
+        sleepTimerMin = next
+        sleepTimerJob?.cancel()
+        if (next > 0) sleepTimerJob = scope.launch {
+            delay(next * 60_000L)
+            if (isPlaying) { player.pause(); isPlaying = false }
+            sleepTimerMin = 0
+        }
+    }
 
     fun toggleShuffle() { shuffle = !shuffle }
     fun toggleRepeat() { repeat = !repeat }
@@ -87,5 +118,7 @@ class MusicPlayerState(private val scope: CoroutineScope) {
     }
     fun previous() { if (tracks.isNotEmpty()) playAt((currentIndex - 1 + tracks.size) % tracks.size) }
 
-    fun release() = player.release()
+    fun release() { sleepTimerJob?.cancel(); player.release() }
+
+    private companion object { const val KEY_FAVORITES = "music.favorites" }
 }

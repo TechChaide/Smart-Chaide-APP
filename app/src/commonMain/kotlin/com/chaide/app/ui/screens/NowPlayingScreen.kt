@@ -11,17 +11,16 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
-import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material.icons.filled.Repeat
-import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Timer
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -44,14 +43,15 @@ private fun fmt(ms: Int): String {
     return "${s / 60}:${(s % 60).toString().padStart(2, '0')}"
 }
 
-/** "Reproduciendo ahora" de pantalla completa — real: barra de progreso,
- *  shuffle y repeat funcionan de verdad (ver MusicPlayerState). No hay
+/** "Now Playing" de pantalla completa — real: barra de progreso, shuffle,
+ *  repeat, favorito (persistido), temporizador de sueno (15/30/60 min) y cola
+ *  (abre la biblioteca) funcionan de verdad (ver MusicPlayerState). No hay
  *  carátula ni "artista" reales en los datos (la tabla solo tiene nombre/
  *  duración/url), así que en vez de una carátula o nombre de artista
  *  inventado se usa un anillo de onda — animado de verdad con la
  *  reproducción, no decorativo. */
 @Composable
-fun NowPlayingScreen(music: MusicPlayerState, onBack: () -> Unit) {
+fun NowPlayingScreen(music: MusicPlayerState, onBack: () -> Unit, onOpenLibrary: () -> Unit = onBack) {
     LaunchedEffect(music.isPlaying) {
         while (music.isPlaying) {
             music.refreshPosition()
@@ -65,16 +65,24 @@ fun NowPlayingScreen(music: MusicPlayerState, onBack: () -> Unit) {
         Column(Modifier.padding(pad).fillMaxSize().padding(horizontal = 24.dp)) {
             Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Ink) }
-                Text("Reproduciendo Ahora", color = Ink, style = MaterialTheme.typography.titleLarge)
+                Text("Now Playing", color = Ink, style = MaterialTheme.typography.titleLarge)
             }
             Spacer(Modifier.height(4.dp))
 
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                IconButton(onClick = {}) { Icon(Icons.Filled.FavoriteBorder, "Favorito", tint = Mist) }
-                IconButton(onClick = {}) { Icon(Icons.Filled.Tune, "Ecualizador", tint = Mist) }
-                IconButton(onClick = {}) { Icon(Icons.Filled.Timer, "Temporizador", tint = Mist) }
-                IconButton(onClick = {}) { Icon(Icons.Filled.Share, "Compartir", tint = Mist) }
-                IconButton(onClick = {}) { Icon(Icons.Filled.MoreVert, "Más", tint = Mist) }
+            // Solo acciones con funcionalidad real (antes habia Ecualizador/
+            // Compartir/Mas sin nada detras: se quitaron).
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+                val fav = music.isFavorite(music.currentTrack)
+                IconButton(onClick = { music.toggleFavorite(music.currentTrack) }) {
+                    Icon(if (fav) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                        if (fav) "Remove from favorites" else "Add to favorites", tint = if (fav) Brand else Mist)
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { music.cycleSleepTimer() }) {
+                        Icon(Icons.Filled.Timer, "Sleep timer", tint = if (music.sleepTimerMin > 0) Brand else Mist)
+                    }
+                    if (music.sleepTimerMin > 0) Text("${music.sleepTimerMin} min", color = Brand, style = MaterialTheme.typography.labelMedium)
+                }
             }
             Spacer(Modifier.weight(1f))
 
@@ -104,6 +112,9 @@ fun NowPlayingScreen(music: MusicPlayerState, onBack: () -> Unit) {
             Spacer(Modifier.height(16.dp))
 
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { music.toggleShuffle() }) {
+                    Icon(Icons.Filled.Shuffle, "Shuffle", tint = if (music.shuffle) Brand else Mist)
+                }
                 IconButton(onClick = { music.toggleRepeat() }) {
                     Icon(Icons.Filled.Repeat, "Repeat", tint = if (music.repeat) Brand else Mist)
                 }
@@ -116,7 +127,7 @@ fun NowPlayingScreen(music: MusicPlayerState, onBack: () -> Unit) {
                 ) {
                     IconButton(onClick = { music.togglePlayPause() }) {
                         Icon(
-                            if (music.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, "Play",
+                            if (music.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, if (music.isPlaying) "Pause" else "Play",
                             tint = Color.White, modifier = Modifier.size(32.dp),
                         )
                     }
@@ -124,8 +135,8 @@ fun NowPlayingScreen(music: MusicPlayerState, onBack: () -> Unit) {
                 IconButton(onClick = { music.next() }, modifier = Modifier.size(48.dp)) {
                     Icon(Icons.Filled.SkipNext, "Next", tint = Ink, modifier = Modifier.size(32.dp))
                 }
-                IconButton(onClick = {}) {
-                    Icon(Icons.Filled.QueueMusic, "Cola", tint = Mist)
+                IconButton(onClick = onOpenLibrary) {
+                    Icon(Icons.Filled.QueueMusic, "Queue", tint = Mist)
                 }
             }
             Spacer(Modifier.weight(1f))

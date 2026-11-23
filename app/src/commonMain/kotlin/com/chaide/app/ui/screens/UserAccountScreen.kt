@@ -65,7 +65,7 @@ fun UserAccountScreen(onBack: () -> Unit, onLoggedOut: () -> Unit) {
                 onClick = { showExitDialog = true },
                 modifier = Modifier.fillMaxWidth().height(52.dp),
                 shape = RoundedCornerShape(26.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = BtnFill, contentColor = TextHi),
+                colors = ButtonDefaults.buttonColors(containerColor = BtnFill, contentColor = BtnText),
             ) { Text("Log Out", style = MaterialTheme.typography.labelLarge) }
 
             Spacer(Modifier.height(20.dp))
@@ -87,7 +87,7 @@ fun UserAccountScreen(onBack: () -> Unit, onLoggedOut: () -> Unit) {
             // Texto literal de la clave real `mine_dialog_exit_title`.
             text = {
                 Text(
-                    "No history data deleted after exit, this acccount still works for log-in next time.",
+                    "No history data deleted after exit, this account still works for log-in next time.",
                     color = TextHi, style = MaterialTheme.typography.bodyLarge,
                 )
             },

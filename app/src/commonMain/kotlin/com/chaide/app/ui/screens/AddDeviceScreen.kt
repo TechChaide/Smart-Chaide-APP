@@ -8,7 +8,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Bed
+import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.ui.draw.alpha
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -29,10 +36,11 @@ import com.chaide.app.ble.M800BleProvisioner
 import com.chaide.app.net.Api
 import com.chaide.app.net.ApiException
 import com.chaide.app.net.BindDeviceRequest
+import com.chaide.app.platform.WifiNetwork
 import com.chaide.app.platform.currentWifiSsid
+import com.chaide.app.platform.scanWifiNetworks
 import com.chaide.app.platform.platformName
 import com.chaide.app.platform.rememberBlePermission
-import com.chaide.app.platform.rememberWifiPicker
 import com.chaide.app.platform.rememberWifiSsidPermission
 import com.chaide.app.ui.theme.*
 import kotlinx.coroutines.Dispatchers
@@ -85,11 +93,16 @@ fun AddDeviceScreen(onBack: () -> Unit, onBound: () -> Unit = {}) {
     val ssidPermission = rememberWifiSsidPermission()
     val hasLocationPerm = ssidPermission.granted
 
+    // Wizard: INTRO -> PICK_DEVICE (cards BLE) -> PICK_NETWORK (cards WiFi) -> PASSWORD.
+    var step by remember { mutableStateOf(WizardStep.INTRO) }
     var scanning by remember { mutableStateOf(false) }
+    var nearby by remember { mutableStateOf<List<M800BleProvisioner.Nearby>>(emptyList()) }
+    var hiddenUnnamed by remember { mutableStateOf(0) }
+    var selected by remember { mutableStateOf<M800BleProvisioner.Nearby?>(null) }
     var identifying by remember { mutableStateOf(false) }
-    var found by remember { mutableStateOf<List<M800BleProvisioner.Found>>(emptyList()) }
+    var binding by remember { mutableStateOf(false) }
+    var needsManualSerial by remember { mutableStateOf(false) }
     var boundName by remember { mutableStateOf<String?>(null) }
-    var wifiStep by remember { mutableStateOf(false) }
     var provisioning by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<String?>(null) }
     var failure by remember { mutableStateOf<String?>(null) }
@@ -98,15 +111,23 @@ fun AddDeviceScreen(onBack: () -> Unit, onBound: () -> Unit = {}) {
     // Herramientas que NO existen en la pantalla real (sonda cruda, override
     // manual de IP/puerto del servidor): ocultas por defecto.
     var showDebugTools by remember { mutableStateOf(false) }
-    // Persistido (GatewaySettings), no hardcodeado: esta IP cambia cada vez
-    // que se reaprovisiona el equipo en otra red, y Home/LiveMonitorScreen
-    // leen este mismo valor para el endpoint /realtime del gateway. La app
-    // real no se lo pide al usuario (va fijo a su propio backend); aqui
-    // queda como ajuste avanzado para poder apuntar a nuestro gateway de pruebas.
+    // Red elegida por el usuario para el M800 + su contrasena.
+    var networks by remember { mutableStateOf<List<WifiNetwork>?>(null) }
+    var networksSupported by remember { mutableStateOf(true) }
+    var loadingNetworks by remember { mutableStateOf(false) }
+    var wifiSsid by remember { mutableStateOf("") }
+    var wifiPass by remember { mutableStateOf("") }
+    // Red a la que el telefono YA esta conectado al terminar de vincular
+    // (detectada en bind(), ver CONFIRM_NETWORK mas abajo) — se le pregunta
+    // al usuario si quiere usar esta antes de mostrarle el listado completo.
+    var detectedSsid by remember { mutableStateOf("") }
+    // Persistido (GatewaySettings), no hardcodeado: Home/LiveMonitorScreen leen
+    // este mismo valor para /realtime. La app real no lo pide (va fijo a su
+    // backend); aqui queda como ajuste avanzado para el gateway de pruebas.
     var serverIp by remember { mutableStateOf(com.chaide.app.net.GatewaySettings.ip) }
     var serverPort by remember { mutableStateOf("29010") }
 
-    DisposableEffect(Unit) { onDispose { scanner?.stop() } }
+    DisposableEffect(Unit) { onDispose { scanner?.stopNearbyScan(); scanner?.stop() } }
 
     // Chequeo previo: si la cuenta ya tiene un M800, ni se pide permiso de
     // Bluetooth ni se escanea — se avisa de una vez (el backend real igual lo
@@ -131,58 +152,101 @@ fun AddDeviceScreen(onBack: () -> Unit, onBound: () -> Unit = {}) {
         else -> e.message ?: "Bind failed"
     }
 
+    fun loadNetworks() {
+        scope.launch {
+            loadingNetworks = true
+            val list = scanWifiNetworks()
+            networksSupported = list != null
+            networks = list
+            loadingNetworks = false
+        }
+    }
+
+    // Al conceder la ubicacion estando en el paso de redes, se buscan de una vez.
+    LaunchedEffect(step, hasLocationPerm) {
+        if (step == WizardStep.PICK_NETWORK && hasLocationPerm && networks == null && !loadingNetworks) loadNetworks()
+    }
+
     fun bind(serial: String) {
-        failure = null
+        failure = null; binding = true
         scope.launch {
             try {
                 val r = withContext(Dispatchers.IO) {
                     Api.service.bindDevice(BindDeviceRequest(deviceName = serial.trim()))
                 }
                 boundName = r.data?.deviceName ?: serial
-                found = emptyList()
-                wifiStep = true
+                needsManualSerial = false
+                networks = null
+                // Si el telefono ya esta conectado a una red, se pregunta
+                // primero si usar ESA antes de mostrar el listado completo
+                // (Android: WifiManager; iOS: NEHotspotNetwork, entitlement
+                // "Access WiFi Information" — antes solo Android lo intentaba).
+                val detected = currentWifiSsid()?.takeIf { it.isNotBlank() }
+                if (detected != null) {
+                    detectedSsid = detected
+                    step = WizardStep.CONFIRM_NETWORK
+                } else {
+                    step = WizardStep.PICK_NETWORK
+                }
             } catch (e: Exception) {
                 failure = parseBindError(e)
+            } finally {
+                binding = false
             }
         }
     }
 
     fun startScan() {
-        failure = null; boundName = null; wifiStep = false; found = emptyList(); scanning = true
+        failure = null; boundName = null; selected = null; needsManualSerial = false
+        nearby = emptyList(); hiddenUnnamed = 0
+        step = WizardStep.PICK_DEVICE; scanning = true
+        scanner?.stopNearbyScan()
         val p = M800BleProvisioner()
         scanner = p
-        // El componente Vue real usa 10s (`setTimeout(doNext, 1e4)`), pero eso
-        // asume que el equipo anuncia por BLE de forma continua. Verificado
-        // contra hardware real: el M800 ya aprovisionado (luz verde fija)
-        // anuncia en RÁFAGAS intermitentes, no continuas — varios intentos de
-        // 10s seguidos no lo encontraron, y uno de 45s sí. Se amplía la
-        // ventana para no depender de la suerte del timing de la ráfaga.
-        p.scanForDevices(timeoutMs = 45_000) { devices ->
-            scanning = false
-            if (devices.isEmpty()) {
-                failure = "No device found. Make sure the green light is flashing slowly."
-                return@scanForDevices
-            }
-            // El serial real viaja en los datos de fabricante del advertisement
-            // (AD 0xFF) — p.ej. "M800424600184". Si está, se vincula directo
-            // (equivalente a `doNext()` del Vue real: un solo equipo -> bind).
-            // El nombre corto (0x09) NO identifica la unidad, lo comparten
-            // varias de lotes distintos; por eso nunca se usa para vincular.
-            val d = devices.first()
-            if (d.serial != null) {
-                bind(d.serial)
-            } else {
-                // Sin serial en el advertisement: se le pregunta al equipo
-                // directo por BLE (igual que la app real, que tampoco muestra
-                // el nombre corto sino el serial completo ya resuelto).
-                identifying = true
-                p.identifyDevice { info ->
-                    identifying = false
-                    val resolved = info?.deviceId?.takeIf { it.isNotBlank() }
-                    if (resolved != null) bind(resolved) else found = devices
-                }
-            }
+        // 45 s: el M800 anuncia en RAFAGAS intermitentes (verificado contra
+        // hardware real), no de forma continua. La lista se llena en vivo.
+        p.scanNearby(
+            timeoutMs = 45_000,
+            onUpdate = { list, hidden -> nearby = list; hiddenUnnamed = hidden },
+            onDone = { list, hidden -> nearby = list; hiddenUnnamed = hidden; scanning = false },
+        )
+    }
+
+    fun pick(device: M800BleProvisioner.Nearby) {
+        val p = scanner ?: return
+        p.stopNearbyScan(); scanning = false
+        selected = device; failure = null
+        p.select(device)
+        // El serial real viaja en los datos de fabricante del anuncio (AD 0xFF).
+        // Si no vino, se le pregunta al equipo por BLE (getSystemInfo), como la
+        // app real; el nombre corto NUNCA se usa para vincular (lo comparten
+        // varias unidades).
+        val serial = device.serial
+        if (serial != null) { bind(serial); return }
+        identifying = true
+        p.identifyDevice { info ->
+            identifying = false
+            val resolved = info?.deviceId?.takeIf { it.isNotBlank() }
+            if (resolved != null) bind(resolved) else needsManualSerial = true
         }
+    }
+
+    fun provision() {
+        failure = null; provisioning = true
+        val p = scanner ?: M800BleProvisioner().also { scanner = it }
+        p.provisionWifi(
+            ssid = wifiSsid, password = wifiPass,
+            serverIp = serverIp, serverPort = serverPort.toIntOrNull() ?: 29010,
+            onDone = { success ->
+                provisioning = false
+                if (success) {
+                    result = boundName
+                    onBound()
+                } else {
+                    failure = "No se pudo configurar el WiFi del colchón. Revisa la contraseña y que siga en modo emparejamiento, e intenta de nuevo."
+                }
+            },
+        )
     }
 
     Scaffold(
@@ -210,34 +274,38 @@ fun AddDeviceScreen(onBack: () -> Unit, onBound: () -> Unit = {}) {
                     CircularProgressIndicator(color = TextHi)
                 }
                 existingDeviceName != null -> AlreadyHasDevice(existingDeviceName!!, onBack)
-                wifiStep -> WifiNetworkStep(
-                    provisioning = provisioning, failure = failure,
-                    hasLocationPerm = hasLocationPerm,
-                    onRequestLocation = ssidPermission.request,
-                    onContinue = { ssid, password ->
-                        failure = null; provisioning = true
-                        val p = scanner ?: M800BleProvisioner().also { scanner = it }
-                        p.provisionWifi(
-                            ssid = ssid, password = password,
-                            serverIp = serverIp, serverPort = serverPort.toIntOrNull() ?: 29010,
-                            onDone = { success ->
-                                provisioning = false
-                                if (success) {
-                                    result = boundName
-                                    onBound()
-                                } else {
-                                    failure = "No se pudo configurar el WiFi del equipo. Intenta de nuevo."
-                                }
-                            },
-                        )
-                    },
-                )
-                scanning || identifying -> Scanning()
-                found.isNotEmpty() -> ConfirmSerial(
-                    bleName = found.first().deviceName,
+                needsManualSerial && selected != null -> ConfirmSerial(
+                    bleName = selected!!.name ?: selected!!.address,
                     failure = failure,
                     onConfirm = { bind(it) },
-                    onCancel = { found = emptyList(); failure = null },
+                    onCancel = { needsManualSerial = false; failure = null; startScan() },
+                )
+                step == WizardStep.PICK_DEVICE -> DevicePickerStep(
+                    devices = nearby, hiddenUnnamed = hiddenUnnamed, scanning = scanning,
+                    busyAddress = if (identifying || binding) selected?.address else null,
+                    failure = failure,
+                    onPick = { pick(it) },
+                    onRescan = { startScan() },
+                )
+                step == WizardStep.CONFIRM_NETWORK -> ConfirmNetworkStep(
+                    ssid = detectedSsid,
+                    onUseIt = { wifiSsid = detectedSsid; wifiPass = ""; failure = null; step = WizardStep.PASSWORD },
+                    onPickDifferent = { step = WizardStep.PICK_NETWORK },
+                )
+                step == WizardStep.PICK_NETWORK -> NetworkPickerStep(
+                    deviceName = boundName ?: "",
+                    networks = networks, supported = networksSupported, loading = loadingNetworks,
+                    hasLocationPerm = hasLocationPerm,
+                    onRequestLocation = ssidPermission.request,
+                    onRefresh = { loadNetworks() },
+                    onPick = { ssid -> wifiSsid = ssid; wifiPass = ""; failure = null; step = WizardStep.PASSWORD },
+                )
+                step == WizardStep.PASSWORD -> PasswordStep(
+                    ssid = wifiSsid, onSsidChange = { wifiSsid = it },
+                    password = wifiPass, onPasswordChange = { wifiPass = it },
+                    provisioning = provisioning, failure = failure,
+                    onChangeNetwork = { if (!provisioning) step = WizardStep.PICK_NETWORK },
+                    onContinue = { provision() },
                 )
                 else -> {
                     Spacer(Modifier.height(16.dp))
@@ -346,7 +414,12 @@ fun AddDeviceScreen(onBack: () -> Unit, onBound: () -> Unit = {}) {
                             cursorColor = TextHi, focusedLabelColor = Mist, unfocusedLabelColor = Mist,
                         )
                         Row {
-                            TextField(serverIp, { serverIp = it }, label = { Text("Server IP (gateway de pruebas)") },
+                            TextField(serverIp, {
+                                serverIp = it
+                                // Se guarda en cuanto es una IPv4 valida: Home y Live
+                                // Monitor leen esta misma IP para /realtime.
+                                if (com.chaide.app.net.GatewaySettings.isValidIp(it)) com.chaide.app.net.GatewaySettings.ip = it.trim()
+                            }, label = { Text("Server IP (gateway de pruebas)") },
                                 singleLine = true, colors = fieldColors, modifier = Modifier.weight(2f))
                             Spacer(Modifier.width(6.dp))
                             TextField(serverPort, { serverPort = it }, label = { Text("Port") },
@@ -362,7 +435,7 @@ fun AddDeviceScreen(onBack: () -> Unit, onBound: () -> Unit = {}) {
                             onClick = blePermission.request,
                             modifier = Modifier.fillMaxWidth().height(56.dp),
                             shape = RoundedCornerShape(28.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = BtnFill, contentColor = TextHi),
+                            colors = ButtonDefaults.buttonColors(containerColor = BtnFill, contentColor = BtnText),
                         ) { Text("Grant Bluetooth permission", style = MaterialTheme.typography.labelLarge) }
                     } else {
                         // `next` = "Continue"
@@ -370,7 +443,7 @@ fun AddDeviceScreen(onBack: () -> Unit, onBound: () -> Unit = {}) {
                             onClick = { startScan() },
                             modifier = Modifier.fillMaxWidth().height(56.dp),
                             shape = RoundedCornerShape(28.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = BtnFill, contentColor = TextHi),
+                            colors = ButtonDefaults.buttonColors(containerColor = BtnFill, contentColor = BtnText),
                         ) { Text("Continue", style = MaterialTheme.typography.labelLarge) }
                     }
                     Spacer(Modifier.height(28.dp))
@@ -380,224 +453,390 @@ fun AddDeviceScreen(onBack: () -> Unit, onBound: () -> Unit = {}) {
     }
 }
 
-/** Fases del mini-wizard de "Ajustes de Wi-Fi" (ver [WifiNetworkStep]). */
-private enum class WifiPhase { DETECTING, ASK_USE_CURRENT, PICK_NETWORK, MANUAL_ENTRY, PASSWORD }
+private enum class WizardStep { INTRO, PICK_DEVICE, CONFIRM_NETWORK, PICK_NETWORK, PASSWORD }
+
+/** Encabezado comun de los pasos del wizard: "Paso N de 3" + titulo + ayuda. */
+@Composable
+private fun WizardHeader(stepNumber: Int, title: String, help: String) {
+    Column(Modifier.fillMaxWidth()) {
+        Spacer(Modifier.height(16.dp))
+        Text("Paso $stepNumber de 3", color = Mist, style = MaterialTheme.typography.labelMedium)
+        Spacer(Modifier.height(4.dp))
+        Text(title, color = TextHi, style = MaterialTheme.typography.headlineSmall)
+        Spacer(Modifier.height(6.dp))
+        Text(help, color = Mist, style = MaterialTheme.typography.bodySmall)
+        Spacer(Modifier.height(18.dp))
+    }
+}
+
+/** Intensidad de senal legible a partir del RSSI (dBm). */
+private fun signalLabel(rssi: Int): String = when {
+    rssi >= -60 -> "Señal fuerte"
+    rssi >= -75 -> "Señal media"
+    else -> "Señal débil"
+}
+
+/** Card base del wizard: fondo de tarjeta, borde de marca si se puede elegir. */
+@Composable
+private fun WizardCard(
+    enabled: Boolean,
+    onClick: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        enabled = enabled,
+        shape = RoundedCornerShape(14.dp),
+        color = Night2,
+        border = androidx.compose.foundation.BorderStroke(1.dp, if (enabled) Brand else Hairline),
+        modifier = Modifier.fillMaxWidth().alpha(if (enabled) 1f else 0.55f),
+    ) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp), content = content)
+    }
+}
 
 /**
- * "Ajustes de Wi-Fi" — aparece DESPUES de vincular, antes de mandar la config
- * por BLE. La app real autorellena el SSID con la red a la que el telefono ya
- * esta conectado; aqui se hace explicito con un primer paso de confirmacion
- * (pedido de negocio: no asumir la red actual sin preguntar), igual en Android
- * e iOS:
- *   1. Si se detecta una red actual -> se pregunta "¿usar esta red?".
- *      - Sí -> solo falta la contraseña (el password nunca se puede leer del
- *        sistema en ninguna plataforma).
- *      - No -> Android abre el selector nativo de redes (panel de Ajustes);
- *        iOS pide el nombre a mano (no tiene selector para apps de terceros).
- *   2. Si no se detecta ninguna red (sin permiso, sin Wi-Fi, o iOS sin el
- *      entitlement) se salta la pregunta y se va directo a esa misma rama.
- * Avisa que el equipo solo acepta 2.4 GHz. "Continuar" manda la config por
- * BLE (WiFiConfigHelper.bleWiFiConfig real, ver M800BleProvisioner.provisionWifi).
+ * Paso 1: equipos Bluetooth cercanos en cards (nombre, MAC, serial). Solo los
+ * M800 se pueden elegir; el resto aparece atenuado como "No compatible".
  */
 @Composable
-private fun WifiNetworkStep(
-    provisioning: Boolean,
+private fun DevicePickerStep(
+    devices: List<M800BleProvisioner.Nearby>,
+    hiddenUnnamed: Int,
+    scanning: Boolean,
+    busyAddress: String?,
     failure: String?,
+    onPick: (M800BleProvisioner.Nearby) -> Unit,
+    onRescan: () -> Unit,
+) {
+    // iOS no expone la MAC: muestra el identificador Bluetooth del sistema.
+    val addressLabel = if (platformName == "ios") "ID Bluetooth" else "MAC"
+    Column(Modifier.fillMaxWidth()) {
+        WizardHeader(
+            1, "Selecciona tu colchón",
+            "Equipos Bluetooth cerca. Solo puedes elegir un Smart Mattress (M800). Si no aparece, comprueba que la luz verde parpadee lento.",
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (scanning) {
+                CircularProgressIndicator(color = TextHi, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(10.dp))
+                Text("Buscando… (hasta 45 s)", color = Mist, style = MaterialTheme.typography.bodyMedium)
+            } else {
+                Text("${devices.count { it.isM800 }} colchón(es) encontrados", color = Mist, style = MaterialTheme.typography.bodyMedium)
+            }
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = onRescan, enabled = busyAddress == null) {
+                Icon(Icons.Filled.Refresh, null, tint = TextHi, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Buscar de nuevo", color = TextHi)
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            devices.forEach { d ->
+                val busy = busyAddress == d.address
+                WizardCard(enabled = d.isM800 && busyAddress == null, onClick = { onPick(d) }) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            if (d.isM800) Icons.Filled.Bed else Icons.Filled.Bluetooth, null,
+                            tint = if (d.isM800) TextHi else Mist, modifier = Modifier.size(28.dp),
+                        )
+                        Spacer(Modifier.width(14.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(d.name ?: "Sin nombre", color = TextHi, style = MaterialTheme.typography.titleMedium)
+                            Spacer(Modifier.height(4.dp))
+                            Text("$addressLabel: ${d.address}", color = Mist, style = MaterialTheme.typography.bodySmall)
+                            if (d.isM800) {
+                                Text(
+                                    "Serial: ${d.serial ?: "se lee al conectar"}",
+                                    color = Mist, style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                            Text("${signalLabel(d.rssi)} · ${d.rssi} dBm", color = Faint, style = MaterialTheme.typography.bodySmall)
+                        }
+                        when {
+                            busy -> CircularProgressIndicator(color = TextHi, modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                            d.isM800 -> Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, "Elegir", tint = TextHi)
+                            else -> Text("No compatible", color = Faint, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                    if (busy) {
+                        Spacer(Modifier.height(8.dp))
+                        Text("Conectando y vinculando a tu cuenta…", color = Mist, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        }
+        if (devices.isEmpty() && !scanning) {
+            Spacer(Modifier.height(12.dp))
+            Text("No se encontró ningún equipo. Acerca el teléfono al colchón y busca de nuevo.", color = Mist, style = MaterialTheme.typography.bodyMedium)
+        }
+        if (hiddenUnnamed > 0) {
+            Spacer(Modifier.height(10.dp))
+            Text("y $hiddenUnnamed equipo(s) Bluetooth sin nombre (no se muestran).", color = Faint, style = MaterialTheme.typography.bodySmall)
+        }
+        failure?.let {
+            Spacer(Modifier.height(14.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.Error, null, tint = Low, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(it, color = Low, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+        Spacer(Modifier.height(28.dp))
+    }
+}
+
+/**
+ * Interstitial entre vincular y elegir red: si el telefono YA esta conectado
+ * a una red Wi-Fi, se pregunta primero si usar ESA antes de mostrarle el
+ * listado completo de [NetworkPickerStep] — evita que el usuario tenga que
+ * buscar entre las cards la red obvia que ya esta usando. No cuenta como un
+ * "Paso N" propio (es parte de "elegir red"), por eso no usa [WizardHeader].
+ * Android la detecta via WifiManager; iOS via NEHotspotNetwork (entitlement
+ * "Access WiFi Information", ver Platform.ios.kt) — antes solo Android podia
+ * ofrecer esto, ahora iOS tambien.
+ */
+@Composable
+private fun ConfirmNetworkStep(
+    ssid: String,
+    onUseIt: () -> Unit,
+    onPickDifferent: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth()) {
+        Spacer(Modifier.height(16.dp))
+        Text("Red Wi-Fi detectada", color = TextHi, style = MaterialTheme.typography.headlineSmall)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Tu teléfono ya está conectado a esta red. ¿Quieres compartirla con el colchón?",
+            color = Mist, style = MaterialTheme.typography.bodySmall,
+        )
+        Spacer(Modifier.height(18.dp))
+        WizardCard(enabled = true, onClick = onUseIt) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.Wifi, null, tint = TextHi, modifier = Modifier.size(26.dp))
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(ssid, color = TextHi, style = MaterialTheme.typography.titleMedium)
+                    Text("Usar esta red", color = Mist, style = MaterialTheme.typography.bodySmall)
+                }
+                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, "Usar", tint = TextHi)
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+        OutlinedButton(onClick = onPickDifferent, modifier = Modifier.fillMaxWidth()) {
+            Text("Usar otra red", color = TextHi)
+        }
+        Spacer(Modifier.height(28.dp))
+    }
+}
+
+/**
+ * Paso 2: redes WiFi en cards (Android). El M800 solo funciona en 2,4 GHz: las
+ * redes solo-5 GHz aparecen atenuadas. En iOS el sistema no deja listar redes:
+ * se ofrece escribir el nombre (card "Otra red").
+ */
+@Composable
+private fun NetworkPickerStep(
+    deviceName: String,
+    networks: List<WifiNetwork>?,
+    supported: Boolean,
+    loading: Boolean,
     hasLocationPerm: Boolean,
     onRequestLocation: () -> Unit,
-    onContinue: (ssid: String, password: String) -> Unit,
+    onRefresh: () -> Unit,
+    onPick: (String) -> Unit,
 ) {
-    var phase by remember { mutableStateOf(WifiPhase.DETECTING) }
-    var detectedSsid by remember { mutableStateOf<String?>(null) }
-    var chosenSsid by remember { mutableStateOf("") }
     var manualSsid by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
-    var showPassword by remember { mutableStateOf(false) }
-    // true cuando volvemos del selector nativo de Android: si ahora hay una
-    // red conectada, el usuario ya la elegio a proposito -> no se le vuelve a
-    // preguntar "¿usar esta red?", se pasa directo a pedir la contraseña.
-    var cameFromPicker by remember { mutableStateOf(false) }
-
-    val launchPicker = rememberWifiPicker(onResult = { cameFromPicker = true; phase = WifiPhase.DETECTING })
-
-    // Se re-ejecuta cada vez que `phase` vuelve a DETECTING: carga inicial y
-    // cada regreso del selector nativo de Android.
-    LaunchedEffect(phase, hasLocationPerm) {
-        if (phase != WifiPhase.DETECTING) return@LaunchedEffect
-        val ssid = if (platformName == "android" && !hasLocationPerm) null else currentWifiSsid()
-        detectedSsid = ssid
-        phase = when {
-            !ssid.isNullOrBlank() && cameFromPicker -> { chosenSsid = ssid; WifiPhase.PASSWORD }
-            !ssid.isNullOrBlank() -> WifiPhase.ASK_USE_CURRENT
-            platformName == "android" -> WifiPhase.PICK_NETWORK
-            else -> WifiPhase.MANUAL_ENTRY
-        }
-    }
-
     val fieldColors = TextFieldDefaults.colors(
         focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent,
         focusedTextColor = TextHi, unfocusedTextColor = TextHi,
         focusedIndicatorColor = Mist, unfocusedIndicatorColor = Hairline,
         cursorColor = TextHi, focusedLabelColor = Mist, unfocusedLabelColor = Mist,
     )
+    Column(Modifier.fillMaxWidth()) {
+        WizardHeader(
+            2, "Elige la red Wi-Fi",
+            "$deviceName quedó vinculado a tu cuenta. Elige la red a la que se conectará el colchón (solo 2,4 GHz).",
+        )
+        when {
+            !supported -> {
+                Text(
+                    "iPhone no permite que las apps vean las redes Wi-Fi cercanas. Escribe el nombre exacto de la red.",
+                    color = Mist, style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+            !hasLocationPerm -> {
+                Text(
+                    "Android pide el permiso de ubicación para mostrar las redes Wi-Fi cercanas.",
+                    color = Mist, style = MaterialTheme.typography.bodyMedium,
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedButton(onClick = onRequestLocation, modifier = Modifier.fillMaxWidth()) {
+                    Text("Permitir y buscar redes", color = TextHi)
+                }
+            }
+            else -> {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (loading) {
+                        CircularProgressIndicator(color = TextHi, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(10.dp))
+                        Text("Buscando redes…", color = Mist, style = MaterialTheme.typography.bodyMedium)
+                    } else {
+                        Text("${networks?.size ?: 0} redes encontradas", color = Mist, style = MaterialTheme.typography.bodyMedium)
+                    }
+                    Spacer(Modifier.weight(1f))
+                    TextButton(onClick = onRefresh, enabled = !loading) {
+                        Icon(Icons.Filled.Refresh, null, tint = TextHi, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Actualizar", color = TextHi)
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    networks.orEmpty().forEach { n ->
+                        WizardCard(enabled = n.has24GHz, onClick = { onPick(n.ssid) }) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Filled.Wifi, null, tint = if (n.has24GHz) TextHi else Mist, modifier = Modifier.size(26.dp))
+                                Spacer(Modifier.width(14.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(n.ssid, color = TextHi, style = MaterialTheme.typography.titleMedium)
+                                    Spacer(Modifier.height(4.dp))
+                                    val bands = listOfNotNull("2,4 GHz".takeIf { n.has24GHz }, "5 GHz".takeIf { n.has5GHz }).joinToString(" + ")
+                                    Text("$bands · ${signalLabel(n.rssi)}", color = Mist, style = MaterialTheme.typography.bodySmall)
+                                }
+                                if (n.secured) Icon(Icons.Filled.Lock, "Con contraseña", tint = Mist, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                if (n.has24GHz) Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, "Elegir", tint = TextHi)
+                                else Text("Solo 5 GHz", color = Faint, style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+                    }
+                }
+                if (!loading && networks.isNullOrEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "No se encontraron redes. Activa la ubicación del teléfono y pulsa Actualizar, o escribe la red abajo.",
+                        color = Mist, style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
+        }
+        // "Otra red": siempre disponible (red oculta, o iOS).
+        Spacer(Modifier.height(16.dp))
+        WizardCard(enabled = true, onClick = {}) {
+            Text(if (supported) "Otra red (escribir nombre)" else "Nombre de la red", color = TextHi, style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(6.dp))
+            OutlinedTextField(
+                value = manualSsid, onValueChange = { manualSsid = it }, singleLine = true,
+                label = { Text("Nombre de la red (SSID)") }, colors = fieldColors,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = { onPick(manualSsid.trim()) },
+                enabled = manualSsid.isNotBlank(),
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(24.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = BtnFill, contentColor = BtnText,
+                    disabledContainerColor = Night, disabledContentColor = Faint,
+                ),
+            ) { Text("Usar esta red", style = MaterialTheme.typography.labelLarge) }
+        }
+        Spacer(Modifier.height(28.dp))
+    }
+}
 
-    @Composable
-    fun PasswordField() {
+/**
+ * Paso 3: contrasena de la red elegida y envio al colchon por Bluetooth
+ * (WiFiConfigHelper.bleWiFiConfig real, ver M800BleProvisioner.provisionWifi).
+ */
+@Composable
+private fun PasswordStep(
+    ssid: String,
+    onSsidChange: (String) -> Unit,
+    password: String,
+    onPasswordChange: (String) -> Unit,
+    provisioning: Boolean,
+    failure: String?,
+    onChangeNetwork: () -> Unit,
+    onContinue: () -> Unit,
+) {
+    var showPassword by remember { mutableStateOf(false) }
+    val fieldColors = TextFieldDefaults.colors(
+        focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent,
+        focusedTextColor = TextHi, unfocusedTextColor = TextHi,
+        focusedIndicatorColor = Mist, unfocusedIndicatorColor = Hairline,
+        cursorColor = TextHi, focusedLabelColor = Mist, unfocusedLabelColor = Mist,
+    )
+    val canContinue = ssid.isNotBlank() && password.isNotBlank() && !provisioning
+
+    Column(Modifier.fillMaxWidth()) {
+        WizardHeader(3, "Contraseña de la red", "Se enviará al colchón por Bluetooth junto con la dirección del servidor.")
+        WizardCard(enabled = !provisioning, onClick = onChangeNetwork) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.Wifi, null, tint = TextHi, modifier = Modifier.size(26.dp))
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Red elegida", color = Mist, style = MaterialTheme.typography.bodySmall)
+                    Text(ssid.ifBlank { "—" }, color = TextHi, style = MaterialTheme.typography.titleMedium)
+                }
+                Text("Cambiar", color = TextHi, style = MaterialTheme.typography.labelMedium)
+            }
+        }
+        Spacer(Modifier.height(16.dp))
         OutlinedTextField(
             value = password,
-            onValueChange = { password = it },
+            onValueChange = onPasswordChange,
             label = { Text("Contraseña") },
             singleLine = true,
+            enabled = !provisioning,
             visualTransformation = if (showPassword) androidx.compose.ui.text.input.VisualTransformation.None
                 else androidx.compose.ui.text.input.PasswordVisualTransformation(),
             trailingIcon = {
                 IconButton(onClick = { showPassword = !showPassword }) {
                     Icon(
                         if (showPassword) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                        null, tint = Mist,
+                        if (showPassword) "Ocultar contraseña" else "Mostrar contraseña", tint = Mist,
                     )
                 }
             },
             colors = fieldColors,
             modifier = Modifier.fillMaxWidth(),
         )
-    }
-
-    @Composable
-    fun Header(subtitle: String) {
-        Spacer(Modifier.height(24.dp))
-        Text("Ajustes de Wi-Fi", color = TextHi, style = MaterialTheme.typography.headlineSmall)
-        Spacer(Modifier.height(6.dp))
-        Text(subtitle, color = Mist, style = MaterialTheme.typography.bodySmall)
-        Spacer(Modifier.height(24.dp))
-    }
-
-    @Composable
-    fun Footer(canContinue: Boolean, onClick: () -> Unit) {
+        Spacer(Modifier.height(12.dp))
+        Text(
+            "Este dispositivo solo es compatible con una red Wi-Fi de 2.4 GHz.",
+            color = Faint, style = MaterialTheme.typography.bodySmall,
+        )
         if (provisioning) {
             Spacer(Modifier.height(14.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 CircularProgressIndicator(color = TextHi, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                 Spacer(Modifier.width(10.dp))
-                Text("Enviando la red al equipo por Bluetooth…", color = Mist, style = MaterialTheme.typography.bodyMedium)
+                Text("Enviando la red al colchón por Bluetooth… (hasta 90 s)", color = Mist, style = MaterialTheme.typography.bodyMedium)
             }
         }
         failure?.let {
             Spacer(Modifier.height(14.dp))
             Text(it, color = Low, style = MaterialTheme.typography.bodyMedium)
         }
-        Spacer(Modifier.weight(1f))
+        Spacer(Modifier.height(24.dp))
         Button(
-            onClick = onClick,
-            enabled = canContinue && !provisioning,
+            onClick = onContinue,
+            enabled = canContinue,
             modifier = Modifier.fillMaxWidth().height(56.dp),
             shape = RoundedCornerShape(28.dp),
             colors = ButtonDefaults.buttonColors(
-                containerColor = BtnFill, contentColor = TextHi,
+                containerColor = BtnFill, contentColor = BtnText,
                 disabledContainerColor = Night2, disabledContentColor = Faint,
             ),
         ) {
-            if (provisioning) CircularProgressIndicator(color = TextHi, modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
-            else Text("Continuar", style = MaterialTheme.typography.labelLarge)
+            if (provisioning) CircularProgressIndicator(color = BtnText, modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+            else Text("Enviar al colchón", style = MaterialTheme.typography.labelLarge)
         }
-        Spacer(Modifier.height(20.dp))
-    }
-
-    when (phase) {
-        WifiPhase.DETECTING -> Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-            CircularProgressIndicator(color = TextHi)
-        }
-
-        WifiPhase.ASK_USE_CURRENT -> Column(Modifier.fillMaxSize()) {
-            Header("Detectamos que tu teléfono está conectado a esta red Wi-Fi.")
-            Text("Red detectada", color = Mist, style = MaterialTheme.typography.bodySmall)
-            Spacer(Modifier.height(4.dp))
-            Text(detectedSsid.orEmpty(), color = TextHi, style = MaterialTheme.typography.titleLarge)
-            Spacer(Modifier.height(28.dp))
-            Text(
-                "¿Quieres compartir esta red con el equipo?",
-                color = Mist, style = MaterialTheme.typography.bodyMedium,
-            )
-            Spacer(Modifier.height(16.dp))
-            Button(
-                onClick = { chosenSsid = detectedSsid.orEmpty(); phase = WifiPhase.PASSWORD },
-                modifier = Modifier.fillMaxWidth().height(56.dp),
-                shape = RoundedCornerShape(28.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = BtnFill, contentColor = TextHi),
-            ) { Text("Sí, usar esta red", style = MaterialTheme.typography.labelLarge) }
-            Spacer(Modifier.height(10.dp))
-            OutlinedButton(
-                onClick = {
-                    cameFromPicker = false
-                    phase = if (platformName == "android") WifiPhase.PICK_NETWORK else WifiPhase.MANUAL_ENTRY
-                },
-                modifier = Modifier.fillMaxWidth().height(56.dp),
-                shape = RoundedCornerShape(28.dp),
-            ) { Text("No, elegir otra red", color = TextHi, style = MaterialTheme.typography.labelLarge) }
-            Spacer(Modifier.weight(1f))
-            Spacer(Modifier.height(20.dp))
-        }
-
-        WifiPhase.PICK_NETWORK -> Column(Modifier.fillMaxSize()) {
-            Header("Elige la red Wi-Fi que quieres compartir con el equipo.")
-            if (!hasLocationPerm) {
-                Text(
-                    "Android exige el permiso de ubicación para detectar automáticamente la red conectada.",
-                    color = Faint, style = MaterialTheme.typography.bodySmall,
-                )
-                Spacer(Modifier.height(8.dp))
-                OutlinedButton(onClick = onRequestLocation, modifier = Modifier.fillMaxWidth()) {
-                    Text("Conceder permiso de ubicación", color = TextHi)
-                }
-                Spacer(Modifier.height(16.dp))
-            }
-            Button(
-                onClick = launchPicker,
-                modifier = Modifier.fillMaxWidth().height(56.dp),
-                shape = RoundedCornerShape(28.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = BtnFill, contentColor = TextHi),
-            ) { Text("Elegir red Wi-Fi", style = MaterialTheme.typography.labelLarge) }
-            Spacer(Modifier.height(10.dp))
-            TextButton(onClick = { phase = WifiPhase.MANUAL_ENTRY }, modifier = Modifier.fillMaxWidth()) {
-                Text("Prefiero escribir el nombre de la red", color = Mist, style = MaterialTheme.typography.bodySmall)
-            }
-            Spacer(Modifier.weight(1f))
-            Spacer(Modifier.height(20.dp))
-        }
-
-        WifiPhase.MANUAL_ENTRY -> Column(Modifier.fillMaxSize()) {
-            Header("Escribe el nombre y la contraseña de la red Wi-Fi del equipo.")
-            OutlinedTextField(
-                value = manualSsid, onValueChange = { manualSsid = it },
-                label = { Text("Nombre de la red (SSID)") }, singleLine = true,
-                colors = fieldColors, modifier = Modifier.fillMaxWidth(),
-            )
-            Spacer(Modifier.height(16.dp))
-            PasswordField()
-            Spacer(Modifier.height(16.dp))
-            Text(
-                "Este dispositivo solo es compatible con una red Wi-Fi de 2.4 GHz.",
-                color = Faint, style = MaterialTheme.typography.bodySmall,
-            )
-            Footer(canContinue = manualSsid.isNotBlank() && password.isNotBlank()) {
-                onContinue(manualSsid.trim(), password)
-            }
-        }
-
-        WifiPhase.PASSWORD -> Column(Modifier.fillMaxSize()) {
-            Header("Confirma la contraseña para compartirla con el equipo por Bluetooth.")
-            Text("Wi-Fi conectado", color = Mist, style = MaterialTheme.typography.bodySmall)
-            Spacer(Modifier.height(4.dp))
-            Text(chosenSsid, color = TextHi, style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(16.dp))
-            PasswordField()
-            Spacer(Modifier.height(16.dp))
-            Text(
-                "Este dispositivo solo es compatible con una red Wi-Fi de 2.4 GHz.",
-                color = Faint, style = MaterialTheme.typography.bodySmall,
-            )
-            Footer(canContinue = password.isNotBlank()) { onContinue(chosenSsid, password) }
-        }
+        Spacer(Modifier.height(28.dp))
     }
 }
 
@@ -656,7 +895,7 @@ private fun ConfirmSerial(
             modifier = Modifier.fillMaxWidth().height(56.dp),
             shape = RoundedCornerShape(28.dp),
             colors = ButtonDefaults.buttonColors(
-                containerColor = BtnFill, contentColor = TextHi,
+                containerColor = BtnFill, contentColor = BtnText,
                 disabledContainerColor = Night2, disabledContentColor = Faint,
             ),
         ) { Text("Add", style = MaterialTheme.typography.labelLarge) }
@@ -664,29 +903,6 @@ private fun ConfirmSerial(
             Text("Scan again", color = Mist)
         }
         Spacer(Modifier.height(20.dp))
-    }
-}
-
-/** `adding_device` = "Adding Device…" */
-@Composable
-private fun Scanning() {
-    Column(
-        Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        CircularProgressIndicator(color = TextHi)
-        Spacer(Modifier.height(20.dp))
-        Text("Adding Device…", color = TextHi, style = MaterialTheme.typography.titleMedium)
-        Spacer(Modifier.height(10.dp))
-        // El equipo anuncia por BLE en ráfagas intermitentes, no continuas —
-        // puede tardar hasta ~45s en vez de unos pocos segundos. Sin este
-        // aviso, un usuario ve el spinner "colgado" y cierra la pantalla
-        // justo antes de que la ráfaga llegue.
-        Text(
-            "Esto puede tardar hasta 45 segundos — el equipo no anuncia de forma continua.",
-            color = Mist, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center,
-            modifier = Modifier.padding(horizontal = 32.dp),
-        )
     }
 }
 
@@ -712,7 +928,7 @@ private fun AlreadyHasDevice(deviceName: String, onBack: () -> Unit) {
             onClick = onBack,
             modifier = Modifier.fillMaxWidth().height(56.dp),
             shape = RoundedCornerShape(28.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = BtnFill, contentColor = TextHi),
+            colors = ButtonDefaults.buttonColors(containerColor = BtnFill, contentColor = BtnText),
         ) { Text("Volver", style = MaterialTheme.typography.labelLarge) }
     }
 }
@@ -733,7 +949,7 @@ private fun BoundOk(name: String, onBack: () -> Unit) {
             onClick = onBack,
             modifier = Modifier.fillMaxWidth(0.8f).height(52.dp),
             shape = RoundedCornerShape(26.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = BtnFill, contentColor = TextHi),
+            colors = ButtonDefaults.buttonColors(containerColor = BtnFill, contentColor = BtnText),
         ) { Text("Start to use", style = MaterialTheme.typography.labelLarge) }
     }
 }

@@ -1,5 +1,7 @@
 package com.chaide.app.util
 
+import com.chaide.app.i18n.AppLanguage
+import com.chaide.app.i18n.LocaleSettings
 import kotlinx.datetime.Clock
 import kotlinx.datetime.DateTimeUnit
 import kotlinx.datetime.Instant
@@ -14,11 +16,15 @@ import kotlinx.datetime.todayIn
  * Reemplazo multiplataforma de SimpleDateFormat/Calendar (solo JVM). Todas
  * las horas se formatean en la zona horaria LOCAL del telefono, igual que
  * hacia SimpleDateFormat sin TimeZone explicita (ver notas en ReportDetailScreen).
- * Nombres de mes/dia: espanol si el telefono esta en espanol, si no ingles.
+ * Nombres de mes/dia siguen [LocaleSettings] (el selector de idioma de la app,
+ * ver i18n/AppLanguage.kt) — NO el idioma del sistema: antes seguian el
+ * locale del telefono mientras el resto de la UI estaba fijo en ingles,
+ * dando mezclas como "oct.2026" con todo lo demas en ingles. Ahora los dos
+ * siguen la misma fuente de verdad.
  */
 object DateFmt {
     private val tz get() = TimeZone.currentSystemDefault()
-    private val isEs get() = androidx.compose.ui.text.intl.Locale.current.language == "es"
+    private val isEs get() = LocaleSettings.language == AppLanguage.ES
 
     private val monthsEn = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
     private val monthsEs = listOf("ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sept", "oct", "nov", "dic")
@@ -36,7 +42,7 @@ object DateFmt {
     /** Minutos desde medianoche, hora local. */
     fun minutesOfDay(epochSec: Long): Int = local(epochSec).let { it.hour * 60 + it.minute }
 
-    /** "MMM" segun idioma del telefono. */
+    /** "MMM" segun [LocaleSettings] (o forzado con [english]). */
     fun monthShort(month: Int, english: Boolean = !isEs): String =
         (if (english) monthsEn else monthsEs)[month - 1]
 
@@ -46,10 +52,10 @@ object DateFmt {
         return "${monthShort(first.monthNumber)}.${first.year}"
     }
 
-    /** "MMM d" en ingles (como Locale.US del codigo original). */
+    /** "MMM d" en ingles (como Locale.US del codigo original) — fijo, no sigue [LocaleSettings]. */
     fun monthDayUs(epochSec: Long): String = local(epochSec).let { "${monthShort(it.monthNumber, english = true)} ${it.dayOfMonth}" }
 
-    /** "EEE" segun idioma del telefono. */
+    /** "EEE" segun [LocaleSettings]. */
     fun weekdayShort(epochSec: Long): String =
         (if (isEs) daysEs else daysEn)[local(epochSec).dayOfWeek.ordinal]
 
